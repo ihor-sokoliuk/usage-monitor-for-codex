@@ -1,841 +1,413 @@
 """
-API Client Tests
-=================
+Provider Adapter Tests
+======================
 
-Unit tests for read_access_token(), fetch_usage() and
-fetch_prepaid_credits().
+Tests for Codex app-server normalization, classification, recovery, and
+profile semantics.
 """
 from __future__ import annotations
 
 import json
+import math
+import sys
 import unittest
-from tempfile import TemporaryDirectory
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from usage_monitor_for_claude import api as api_module
 from usage_monitor_for_claude.api import (
-    API_URL_USAGE, _extract_server_message, _merge_scoped_limits, _model_slug, _normalize_prepaid_credits, _parse_retry_after,
-    fetch_prepaid_credits, fetch_usage, read_access_token,
+    _model_slug, _normalize_rate_limits, _parse_account, _profile_from_account,
+    fetch_provider_data, refresh_profile,
 )
-from usage_monitor_for_claude.formatting import expand_popup_fields
-from usage_monitor_for_claude.i18n import LOCALE_DIR
-from usage_monitor_for_claude.instance_id import effective_config_dir
+from usage_monitor_for_claude.app_server import AppServerTransport, CodexCliNotFound, RpcError, TransportError
 
-EN = json.loads((LOCALE_DIR / 'en.json').read_text(encoding='utf-8'))
+FIXTURES = Path(__file__).parent / 'fixtures' / 'codex'
+FAKE_APP_SERVER = str(Path(__file__).parent / 'fake_app_server.py')
 
 
-# ---------------------------------------------------------------------------
-# CLAUDE_CONFIG_DIR
-# ---------------------------------------------------------------------------
+def _load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding='utf-8'))
 
-class TestClaudeConfigDir(unittest.TestCase):
-    """Tests for CLAUDE_CONFIG_DIR resolution."""
 
-    def test_default_uses_home_claude(self):
-        """Without CLAUDE_CONFIG_DIR env var, defaults to ~/.claude/."""
-        with patch.dict('os.environ', {}, clear=False):
-            # Remove CLAUDE_CONFIG_DIR if it happens to be set
-            env = {k: v for k, v in __import__('os').environ.items() if k != 'CLAUDE_CONFIG_DIR'}
-            with patch.dict('os.environ', env, clear=True):
-                import importlib
-                import usage_monitor_for_claude.api as api_mod
-                importlib.reload(api_mod)
-                try:
-                    expected = (Path.home() / '.claude').resolve()
-                    self.assertEqual(api_mod.CLAUDE_CONFIG_DIR, expected)
-                    self.assertEqual(api_mod.CLAUDE_CREDENTIALS, expected / '.credentials.json')
-                finally:
-                    importlib.reload(api_mod)
+def _rpc_error_fixture(name: str) -> RpcError:
+    payload = _load_fixture(name)
+    return RpcError(payload.get('code'), str(payload.get('message', '')), payload.get('data'))
 
-    def test_custom_config_dir(self):
-        """CLAUDE_CONFIG_DIR env var overrides the default path."""
-        with TemporaryDirectory() as tmp:
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': tmp}):
-                import importlib
-                import usage_monitor_for_claude.api as api_mod
-                importlib.reload(api_mod)
-                try:
-                    self.assertEqual(api_mod.CLAUDE_CONFIG_DIR, Path(tmp).resolve())
-                    self.assertEqual(api_mod.CLAUDE_CREDENTIALS, Path(tmp).resolve() / '.credentials.json')
-                finally:
-                    importlib.reload(api_mod)
-
-    def test_matches_instance_id_helper(self):
-        """The credentials directory is the one instance_id derives for this instance."""
-        with TemporaryDirectory() as tmp:
-            # A spelling that only compares equal once resolved, so an inlined
-            # derivation that skips the resolution fails this assertion.
-            (Path(tmp) / 'sub').mkdir()
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': str(Path(tmp) / 'sub' / '..')}):
-                import importlib
-                import usage_monitor_for_claude.api as api_mod
-                importlib.reload(api_mod)
-                try:
-                    self.assertEqual(api_mod.CLAUDE_CONFIG_DIR, effective_config_dir())
-                    self.assertEqual(api_mod.CLAUDE_CONFIG_DIR, Path(tmp).resolve())
-                finally:
-                    importlib.reload(api_mod)
-
-    def test_empty_config_dir_uses_default(self):
-        """Empty CLAUDE_CONFIG_DIR env var falls back to default."""
-        with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': ''}):
-            import importlib
-            import usage_monitor_for_claude.api as api_mod
-            importlib.reload(api_mod)
-            try:
-                self.assertEqual(api_mod.CLAUDE_CONFIG_DIR, (Path.home() / '.claude').resolve())
-            finally:
-                importlib.reload(api_mod)
-
-
-# ---------------------------------------------------------------------------
-# read_access_token
-# ---------------------------------------------------------------------------
-
-class TestReadAccessToken(unittest.TestCase):
-    """Tests for read_access_token()."""
-
-    def test_file_missing(self):
-        """Missing credentials file returns None."""
-        with TemporaryDirectory() as tmp:
-            fake_path = Path(tmp) / 'nonexistent.json'
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', fake_path):
-                self.assertIsNone(read_access_token())
-
-    def test_valid_token(self):
-        """Extracts token from well-formed credentials file."""
-        creds = {'claudeAiOauth': {'accessToken': 'sk-test-123'}}
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text(json.dumps(creds))
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertEqual(read_access_token(), 'sk-test-123')
-
-    def test_malformed_json(self):
-        """Malformed JSON returns None."""
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text('not json')
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-    def test_missing_oauth_key(self):
-        """Missing claudeAiOauth key returns None."""
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text('{"otherKey": {}}')
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-    def test_missing_access_token_key(self):
-        """Missing accessToken key returns None."""
-        creds = {'claudeAiOauth': {'refreshToken': 'rt-123'}}
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text(json.dumps(creds))
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-    def test_empty_token_string(self):
-        """Empty token string returns None (falsy check)."""
-        creds = {'claudeAiOauth': {'accessToken': ''}}
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text(json.dumps(creds))
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-    def test_read_error_returns_none(self):
-        """An OS-level read failure (e.g. a read racing a concurrent write) returns None instead of raising."""
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text('{"claudeAiOauth": {"accessToken": "sk-test-123"}}')
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file), \
-                 patch.object(Path, 'read_text', side_effect=PermissionError('locked')):
-                self.assertIsNone(read_access_token())
-
-    def test_null_oauth_value_returns_none(self):
-        """A claudeAiOauth key holding JSON null (e.g. after a logout) returns None instead of raising."""
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text('{"claudeAiOauth": null}')
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-    def test_non_object_top_level_returns_none(self):
-        """Valid JSON with a non-object top level (list, string, number) returns None instead of raising."""
-        for content in ('[]', '"token"', '42', 'null'):
-            with self.subTest(content=content), TemporaryDirectory() as tmp:
-                creds_file = Path(tmp) / 'creds.json'
-                creds_file.write_text(content)
-                with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                    self.assertIsNone(read_access_token())
-
-    def test_non_dict_oauth_value_returns_none(self):
-        """A claudeAiOauth key holding a non-object value returns None instead of raising."""
-        with TemporaryDirectory() as tmp:
-            creds_file = Path(tmp) / 'creds.json'
-            creds_file.write_text('{"claudeAiOauth": "sk-test-123"}')
-            with patch('usage_monitor_for_claude.api.CLAUDE_CREDENTIALS', creds_file):
-                self.assertIsNone(read_access_token())
-
-
-# ---------------------------------------------------------------------------
-# fetch_usage
-# ---------------------------------------------------------------------------
-
-@patch('usage_monitor_for_claude.api.T', EN)
-class TestFetchUsage(unittest.TestCase):
-    """Tests for fetch_usage()."""
-
-    @patch('usage_monitor_for_claude.api.api_headers', return_value=None)
-    def test_no_token_returns_error(self, _mock_headers):
-        """Missing token returns no_token error."""
-        result = fetch_usage()
-        self.assertEqual(result, {'error': EN['no_token']})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_success(self, _mock_headers, mock_get):
-        """Successful response returns parsed JSON."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {'five_hour': {'utilization': 42.0}}
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'five_hour': {'utilization': 42.0}})
-        mock_get.assert_called_once_with(API_URL_USAGE, headers={'Authorization': 'Bearer test'}, timeout=10)
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_connection_error(self, _mock_headers, mock_get):
-        """ConnectionError returns connection_error message."""
-        import requests
-        mock_get.side_effect = requests.ConnectionError()
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['connection_error']})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_certificate_error(self, _mock_headers, mock_get):
-        """SSLError returns certificate_error, not the generic connection_error it subclasses."""
-        import requests
-        mock_get.side_effect = requests.exceptions.SSLError()
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['certificate_error']})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_401_returns_auth_error(self, _mock_headers, mock_get):
-        """HTTP 401 returns auth_error with flag."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 401
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result['error'], EN['auth_expired'])
-        self.assertTrue(result['auth_error'])
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_server_error_500(self, _mock_headers, mock_get):
-        """HTTP 500 returns server_error with status code."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['server_error'].format(code=500)})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_server_error_503(self, _mock_headers, mock_get):
-        """HTTP 503 returns server_error with status code."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 503
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['server_error'].format(code=503)})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_client_http_error(self, _mock_headers, mock_get):
-        """Non-5xx, non-401 HTTP error returns http_error with status code."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['http_error'].format(code=403)})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_http_error_without_response(self, _mock_headers, mock_get):
-        """HTTPError with response=None uses '?' as status code."""
-        import requests
-        mock_get.side_effect = requests.HTTPError(response=None)
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['http_error'].format(code='?')})
-        self.assertNotIn('auth_error', result)
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_generic_exception(self, _mock_headers, mock_get):
-        """Unexpected exception returns connection_error message."""
-        mock_get.side_effect = RuntimeError('unexpected')
-
-        result = fetch_usage()
-
-        self.assertEqual(result, {'error': EN['connection_error']})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_only_calls_usage_url(self, _mock_headers, mock_get):
-        """Verify the request goes exclusively to API_URL_USAGE."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {}
-        mock_get.return_value = mock_resp
-
-        fetch_usage()
-
-        called_url = mock_get.call_args[0][0]
-        self.assertEqual(called_url, 'https://api.anthropic.com/api/oauth/usage')
-
-
-# ---------------------------------------------------------------------------
-# 429 / rate limit handling
-# ---------------------------------------------------------------------------
-
-@patch('usage_monitor_for_claude.api.T', EN)
-class TestFetchUsageRateLimit(unittest.TestCase):
-    """Tests for HTTP 429 rate-limit handling in fetch_usage()."""
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_429_returns_rate_limited_flag(self, _mock_headers, mock_get):
-        """HTTP 429 sets rate_limited flag."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-        mock_resp.headers = {}
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertTrue(result['rate_limited'])
-        self.assertEqual(result['error'], EN['http_error'].format(code=429))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_429_with_retry_after(self, _mock_headers, mock_get):
-        """HTTP 429 with Retry-After header includes retry_after in result."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-        mock_resp.headers = {'Retry-After': '60'}
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result['retry_after'], 60)
-        self.assertTrue(result['rate_limited'])
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_429_with_server_message(self, _mock_headers, mock_get):
-        """HTTP 429 with JSON error body includes server_message."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-        mock_resp.headers = {'Retry-After': '0'}
-        mock_resp.json.return_value = {'error': {'message': 'Rate limited. Please try again later.'}}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result['server_message'], 'Rate limited.')
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_429_without_retry_after_header(self, _mock_headers, mock_get):
-        """HTTP 429 without Retry-After header omits retry_after from result."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-        mock_resp.headers = {}
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertNotIn('retry_after', result)
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_server_message_on_non_429_error(self, _mock_headers, mock_get):
-        """Server message is included for non-429 HTTP errors too."""
-        import requests
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_resp.json.return_value = {'error': {'message': 'Internal server error'}}
-        mock_resp.raise_for_status.side_effect = requests.HTTPError(response=mock_resp)
-        mock_get.return_value = mock_resp
-
-        result = fetch_usage()
-
-        self.assertEqual(result['server_message'], 'Internal server error')
-
-
-# ---------------------------------------------------------------------------
-# fetch_prepaid_credits
-# ---------------------------------------------------------------------------
-
-_ORG_UUID = '2b4f9a1c-7d3e-4a58-9c61-0e8fb2d7a940'
-
-
-def _prepaid_response(**overrides):
-    """Build a prepaid-credits response as returned by the OAuth endpoint."""
-    data = {
-        'amount': 5597,
-        'currency': 'EUR',
-        'balance': {'money': {'amount_minor': 5597, 'currency': 'EUR', 'exponent': 2}, 'credits': None},
-        'balance_credits': None,
-        'auto_reload_settings': None,
-        'expiry_policy_months': None,
-        'tranches': [],
-        'promo_tranches': [],
-        'next_expires_at': None,
-    }
-    data.update(overrides)
-
-    return data
-
-
-def _http_error_response(status_code):
-    """Build a mock response whose raise_for_status() raises an HTTPError."""
-    import requests
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
-
-    return resp
-
-
-class TestFetchPrepaidCredits(unittest.TestCase):
-    """Tests for fetch_prepaid_credits()."""
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_success_returns_normalized_balance(self, _mock_headers, mock_get):
-        """A numeric amount returns the normalized balance dict."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _prepaid_response()
-        mock_get.return_value = mock_resp
-
-        result = fetch_prepaid_credits(_ORG_UUID)
-
-        self.assertEqual(result, {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_request_targets_the_org_endpoint(self, _mock_headers, mock_get):
-        """The organization uuid is the only variable part of the URL."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _prepaid_response()
-        mock_get.return_value = mock_resp
-
-        fetch_prepaid_credits(_ORG_UUID)
-
-        mock_get.assert_called_once_with(
-            f'https://api.anthropic.com/api/oauth/organizations/{_ORG_UUID}/prepaid/credits',
-            headers={'Authorization': 'Bearer test'},
-            timeout=5,
-        )
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_empty_tranches_still_returns_balance(self, _mock_headers, mock_get):
-        """Empty tranches / promo_tranches do not affect the balance."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _prepaid_response(tranches=[], promo_tranches=[])
-        mock_get.return_value = mock_resp
-
-        self.assertEqual(fetch_prepaid_credits(_ORG_UUID), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_null_tranche_money_objects_ignored(self, _mock_headers, mock_get):
-        """The null money objects nested in a promo tranche are never read."""
-        tranche = {
-            'remaining_amount_minor_units': 5596, 'granted_amount_minor_units': 8500, 'currency': 'EUR',
-            'expires_at': '2026-09-19T00:00:00Z', 'granted_at': None, 'remaining': None, 'granted': None, 'program_id': None,
-        }
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _prepaid_response(promo_tranches=[tranche])
-        mock_get.return_value = mock_resp
-
-        self.assertEqual(fetch_prepaid_credits(_ORG_UUID), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_missing_amount_returns_none(self, _mock_headers, mock_get):
-        """A response without an amount means the account has no prepaid credits."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _prepaid_response(amount=None)
-        mock_get.return_value = mock_resp
-
-        self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_non_numeric_amount_returns_none(self, _mock_headers, mock_get):
-        """A non-numeric amount returns None instead of raising."""
-        for amount in ('5597', [], {}, True):
-            with self.subTest(amount=amount):
-                mock_resp = MagicMock()
-                mock_resp.json.return_value = _prepaid_response(amount=amount)
-                mock_get.return_value = mock_resp
-
-                self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_http_errors_return_none(self, _mock_headers, mock_get):
-        """HTTP 401, 429 and 500 all return None without raising."""
-        for code in (401, 429, 500):
-            with self.subTest(code=code):
-                mock_get.return_value = _http_error_response(code)
-
-                self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_connection_error_returns_none(self, _mock_headers, mock_get):
-        """A connection error returns None without raising."""
-        import requests
-        mock_get.side_effect = requests.ConnectionError()
-
-        self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_unexpected_exception_returns_none(self, _mock_headers, mock_get):
-        """No exception escapes - the caller stores the result without guarding."""
-        mock_get.side_effect = RuntimeError('unexpected')
-
-        self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_invalid_json_body_returns_none(self, _mock_headers, mock_get):
-        """A body that is not JSON returns None without raising."""
-        mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError('not JSON')
-        mock_get.return_value = mock_resp
-
-        self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value={'Authorization': 'Bearer test'})
-    def test_invalid_org_uuid_makes_no_request(self, _mock_headers, mock_get):
-        """A uuid that is empty, malformed or path-like is rejected before any request."""
-        # The trailing-newline case fails only against the \A...\Z anchors: a $ anchor
-        # matches before a final newline, so without it the pattern could be weakened
-        # to ^...$ without a single test noticing.
-        for org_uuid in ('', '   ', 'not-a-uuid', f'{_ORG_UUID}/../../admin', f'../{_ORG_UUID}', f'{_ORG_UUID}\n', None, 123):
-            with self.subTest(org_uuid=org_uuid):
-                self.assertIsNone(fetch_prepaid_credits(org_uuid))
-
-        mock_get.assert_not_called()
-
-    @patch('usage_monitor_for_claude.api.requests.get')
-    @patch('usage_monitor_for_claude.api.api_headers', return_value=None)
-    def test_no_token_makes_no_request(self, _mock_headers, mock_get):
-        """Without a token no request is made and None is returned."""
-        self.assertIsNone(fetch_prepaid_credits(_ORG_UUID))
-        mock_get.assert_not_called()
-
-
-class TestNormalizePrepaidCredits(unittest.TestCase):
-    """Tests for _normalize_prepaid_credits()."""
-
-    def test_exponent_from_balance_money(self):
-        """The decimal places come from the top-level balance.money exponent."""
-        data = _prepaid_response(balance={'money': {'amount_minor': 5597, 'currency': 'JPY', 'exponent': 0}, 'credits': None})
-        self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': 'JPY', 'decimal_places': 0})
-
-    def test_null_balance_falls_back_to_top_level_currency(self):
-        """A null balance still yields the amount, with two decimal places assumed."""
-        data = _prepaid_response(balance=None)
-        self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_null_money_falls_back_to_top_level_currency(self):
-        """A null balance.money still yields the amount, with two decimal places assumed."""
-        data = _prepaid_response(balance={'money': None, 'credits': None})
-        self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_non_dict_balance_or_money_ignored(self):
-        """A balance or money object that changed type is ignored rather than raised on."""
-        for balance in ('x', [1], 42, {'money': 'x'}, {'money': [1]}):
-            with self.subTest(balance=balance):
-                data = _prepaid_response(balance=balance)
-                self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_missing_currency_returns_none_currency(self):
-        """Without any currency the field is None, so the locale default applies."""
-        data = _prepaid_response(currency=None, balance={'money': {'exponent': 2}, 'credits': None})
-        self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': None, 'decimal_places': 2})
-
-    def test_non_integer_exponent_uses_default(self):
-        """A non-integer exponent falls back to two decimal places."""
-        data = _prepaid_response(balance={'money': {'currency': 'EUR', 'exponent': '2'}, 'credits': None})
-        self.assertEqual(_normalize_prepaid_credits(data), {'amount_minor': 5597.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_zero_amount(self):
-        """A depleted balance of zero is a valid amount, not a missing one."""
-        self.assertEqual(_normalize_prepaid_credits(_prepaid_response(amount=0)), {'amount_minor': 0.0, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_float_amount(self):
-        """A float amount is accepted."""
-        self.assertEqual(_normalize_prepaid_credits(_prepaid_response(amount=5597.5)), {'amount_minor': 5597.5, 'currency': 'EUR', 'decimal_places': 2})
-
-    def test_non_dict_returns_none(self):
-        """A body that is not an object returns None."""
-        for data in (None, [], 'text', 42):
-            with self.subTest(data=data):
-                self.assertIsNone(_normalize_prepaid_credits(data))
-
-
-# ---------------------------------------------------------------------------
-# Certificate verification
-# ---------------------------------------------------------------------------
-
-class TestCertificateVerification(unittest.TestCase):
-    """Tests for the Windows certificate store integration."""
-
-    def test_windows_certificate_store_is_active(self):
-        """Importing the API module routes TLS verification through the Windows certificate store."""
-        import ssl
-        import truststore
-
-        self.assertIs(ssl.SSLContext, truststore.SSLContext)
-
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-class TestExtractServerMessage(unittest.TestCase):
-    """Tests for _extract_server_message()."""
-
-    def test_none_response(self):
-        self.assertIsNone(_extract_server_message(None))
-
-    def test_json_error_message(self):
-        resp = MagicMock()
-        resp.json.return_value = {'error': {'message': 'Something went wrong.'}}
-        self.assertEqual(_extract_server_message(resp), 'Something went wrong.')
-
-    def test_strips_retry_suffix(self):
-        """Strips 'Please try again later.' suffix since the app retries automatically."""
-        resp = MagicMock()
-        resp.json.return_value = {'error': {'message': 'Rate limited. Please try again later.'}}
-        self.assertEqual(_extract_server_message(resp), 'Rate limited.')
-
-    def test_empty_message(self):
-        resp = MagicMock()
-        resp.json.return_value = {'error': {'message': ''}}
-        self.assertIsNone(_extract_server_message(resp))
-
-    def test_no_error_key(self):
-        resp = MagicMock()
-        resp.json.return_value = {'status': 'ok'}
-        self.assertIsNone(_extract_server_message(resp))
-
-    def test_html_body(self):
-        resp = MagicMock()
-        resp.json.side_effect = ValueError('not JSON')
-        self.assertIsNone(_extract_server_message(resp))
-
-
-class TestParseRetryAfter(unittest.TestCase):
-    """Tests for _parse_retry_after()."""
-
-    def test_none_response(self):
-        self.assertIsNone(_parse_retry_after(None))
-
-    def test_valid_integer(self):
-        resp = MagicMock()
-        resp.headers = {'Retry-After': '120'}
-        self.assertEqual(_parse_retry_after(resp), 120)
-
-    def test_zero_value(self):
-        resp = MagicMock()
-        resp.headers = {'Retry-After': '0'}
-        self.assertEqual(_parse_retry_after(resp), 0)
-
-    def test_negative_clamped_to_zero(self):
-        resp = MagicMock()
-        resp.headers = {'Retry-After': '-5'}
-        self.assertEqual(_parse_retry_after(resp), 0)
-
-    def test_missing_header(self):
-        resp = MagicMock()
-        resp.headers = {}
-        self.assertIsNone(_parse_retry_after(resp))
-
-    def test_non_numeric_value(self):
-        resp = MagicMock()
-        resp.headers = {'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT'}
-        self.assertIsNone(_parse_retry_after(resp))
-
-
-# ---------------------------------------------------------------------------
-# _merge_scoped_limits
-# ---------------------------------------------------------------------------
-
-_FIVE_HOUR_RESET = '2026-07-02T10:19:59.752884+00:00'
-_SEVEN_DAY_RESET = '2026-07-09T02:59:59.752905+00:00'
-
-
-def _response_with_scoped(display_name, percent, resets_at):
-    """Build a usage response carrying one model-scoped weekly limit."""
-    return {
-        'five_hour': {'utilization': 4.0, 'resets_at': _FIVE_HOUR_RESET},
-        'seven_day': {'utilization': 1.0, 'resets_at': _SEVEN_DAY_RESET},
-        'limits': [
-            {'kind': 'session', 'group': 'session', 'percent': 4, 'resets_at': _FIVE_HOUR_RESET, 'scope': None},
-            {'kind': 'weekly_all', 'group': 'weekly', 'percent': 1, 'resets_at': _SEVEN_DAY_RESET, 'scope': None},
-            {'kind': 'weekly_scoped', 'group': 'weekly', 'percent': percent, 'resets_at': resets_at,
-             'scope': {'model': {'id': None, 'display_name': display_name}, 'surface': None}},
-        ],
-    }
-
-
-class TestMergeScopedLimits(unittest.TestCase):
-    """Tests for _merge_scoped_limits()."""
-
-    def test_no_limits_key_passthrough(self):
-        """A response without a 'limits' array is returned unchanged."""
-        data = {'five_hour': {'utilization': 42.0}}
-        self.assertEqual(_merge_scoped_limits(data), {'five_hour': {'utilization': 42.0}})
-
-    def test_limits_not_a_list_passthrough(self):
-        """A non-list 'limits' value is ignored."""
-        data = {'seven_day': {'utilization': 1.0}, 'limits': None}
-        self.assertEqual(_merge_scoped_limits(data), data)
-
-    def test_active_scoped_limit_becomes_field(self):
-        """An active model-scoped weekly limit becomes a synthetic quota field."""
-        result = _merge_scoped_limits(_response_with_scoped('Fable', 30, _SEVEN_DAY_RESET))
-        self.assertEqual(result['seven_day_fable'], {'utilization': 30.0, 'resets_at': _SEVEN_DAY_RESET, 'from_account_limits': True})
-
-    def test_percent_is_float(self):
-        """The integer 'percent' is exposed as a float 'utilization'."""
-        result = _merge_scoped_limits(_response_with_scoped('Fable', 30, _SEVEN_DAY_RESET))
-        self.assertIsInstance(result['seven_day_fable']['utilization'], float)
-
-    def test_inactive_scoped_limit_still_exposed(self):
-        """A scoped limit without a reset window is exposed at 0% with resets_at None."""
-        result = _merge_scoped_limits(_response_with_scoped('Fable', 0, None))
-        self.assertEqual(result['seven_day_fable'], {'utilization': 0.0, 'resets_at': None, 'from_account_limits': True})
-
-    def test_existing_top_level_field_not_overwritten(self):
-        """A top-level field wins over a scoped limit for the same model."""
-        data = _response_with_scoped('Sonnet', 50, _SEVEN_DAY_RESET)
-        data['seven_day_sonnet'] = {'utilization': 55.0, 'resets_at': _SEVEN_DAY_RESET}
-        result = _merge_scoped_limits(data)
-        self.assertEqual(result['seven_day_sonnet']['utilization'], 55.0)
-
-    def test_scoped_without_base_group_skipped(self):
-        """Without a non-scoped limit of the same group, no prefix can be derived."""
-        data = {
-            'five_hour': {'utilization': 4.0, 'resets_at': _FIVE_HOUR_RESET},
-            'seven_day': {'utilization': 1.0, 'resets_at': _SEVEN_DAY_RESET},
-            'limits': [
-                {'kind': 'weekly_scoped', 'group': 'weekly', 'percent': 30, 'resets_at': _SEVEN_DAY_RESET,
-                 'scope': {'model': {'display_name': 'Fable'}}},
-            ],
-        }
-        self.assertNotIn('seven_day_fable', _merge_scoped_limits(data))
-
-    def test_input_not_mutated(self):
-        """The original response dict is not mutated in place."""
-        data = _response_with_scoped('Fable', 30, _SEVEN_DAY_RESET)
-        _merge_scoped_limits(data)
-        self.assertNotIn('seven_day_fable', data)
-
-    def test_original_fields_preserved(self):
-        """Existing top-level quota fields survive the merge unchanged."""
-        result = _merge_scoped_limits(_response_with_scoped('Fable', 30, _SEVEN_DAY_RESET))
-        self.assertEqual(result['five_hour']['utilization'], 4.0)
-        self.assertEqual(result['seven_day']['utilization'], 1.0)
-
-    def test_synthetic_field_marked(self):
-        """A synthetic field carries from_account_limits; the top-level fields it derives from do not."""
-        result = _merge_scoped_limits(_response_with_scoped('Fable', 0, None))
-        self.assertIs(result['seven_day_fable']['from_account_limits'], True)
-        self.assertNotIn('from_account_limits', result['seven_day'])
-
-    def test_inactive_scoped_limit_under_unparsable_prefix_shown(self):
-        """An unused model-scoped limit stays visible when its inherited prefix is not a number word."""
-        monthly_reset = '2026-10-01T00:00:00+00:00'
-        data = {
-            'monthly': {'utilization': 30.0, 'resets_at': monthly_reset},
-            'limits': [
-                {'kind': 'monthly_all', 'group': 'monthly', 'percent': 30, 'resets_at': monthly_reset, 'scope': None},
-                {'kind': 'monthly_model', 'group': 'monthly', 'percent': 0, 'resets_at': None,
-                 'scope': {'model': {'display_name': 'Sonnet'}}},
-            ],
-        }
-        self.assertEqual(expand_popup_fields(['*'], _merge_scoped_limits(data)), ['monthly', 'monthly_sonnet'])
-
-
-# ---------------------------------------------------------------------------
-# _model_slug
-# ---------------------------------------------------------------------------
 
 class TestModelSlug(unittest.TestCase):
-    """Tests for _model_slug()."""
+    def test_words_digits_and_punctuation(self):
+        self.assertEqual(_model_slug('GPT 5-Pro'), 'gpt_5_pro')
 
-    def test_single_word(self):
-        self.assertEqual(_model_slug('Fable'), 'fable')
 
-    def test_multi_word(self):
-        self.assertEqual(_model_slug('Claude Sonnet'), 'claude_sonnet')
+class TestNormalizeRateLimits(unittest.TestCase):
+    def test_five_hour_plus_weekly(self):
+        result = _normalize_rate_limits(_load_fixture('01_five_hour_plus_weekly.json'))
+        self.assertEqual(set(result), {'five_hour', 'seven_day'})
+        self.assertEqual(result['five_hour']['utilization'], 12.0)
+        self.assertEqual(result['seven_day']['utilization'], 29.0)
 
-    def test_digits_and_punctuation(self):
-        self.assertEqual(_model_slug('Opus 4.5'), 'opus_4_5')
+    def test_used_percent_not_inverted(self):
+        result = _normalize_rate_limits(_load_fixture('02_weekly_only_primary.json'))
+        self.assertEqual(result['seven_day']['utilization'], 29.0)
+
+    def test_weekly_only_primary_named_by_duration(self):
+        self.assertEqual(list(_normalize_rate_limits(_load_fixture('02_weekly_only_primary.json'))), ['seven_day'])
+
+    def test_null_secondary_skipped(self):
+        self.assertEqual(list(_normalize_rate_limits(_load_fixture('03_secondary_null.json'))), ['five_hour'])
+
+    def test_epoch_converts_to_aware_utc_iso(self):
+        result = _normalize_rate_limits(_load_fixture('01_five_hour_plus_weekly.json'))
+        self.assertEqual(result['five_hour']['resets_at'], '2025-07-15T17:20:00+00:00')
+
+    def test_keyed_source_ignores_snapshot(self):
+        result = _normalize_rate_limits(_load_fixture('04_multi_bucket.json'))
+        self.assertEqual(set(result), {'five_hour', 'seven_day', 'seven_day_gpt_5_pro'})
+
+    def test_keyed_model_limit_preserves_friendly_name(self):
+        payload = {'rateLimitsByLimitId': {'codex_bengalfox': {
+            'limitName': 'gpt-5.2-codex-sonic',
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertEqual(result['seven_day_codex_bengalfox']['limit_name'], 'gpt-5.2-codex-sonic')
+
+    def test_default_codex_limit_does_not_override_generic_label(self):
+        payload = {'rateLimitsByLimitId': {'codex': {
+            'limitName': 'gpt-5.6-sol',
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertNotIn('limit_name', result['seven_day'])
+
+    def test_invalid_friendly_name_is_ignored(self):
+        payload = {'rateLimitsByLimitId': {'codex_bengalfox': {
+            'limitName': {'unexpected': 'object'},
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertNotIn('limit_name', result['seven_day_codex_bengalfox'])
+
+    def test_empty_keyed_map_falls_back_to_snapshot(self):
+        payload = _load_fixture('01_five_hour_plus_weekly.json')
+        payload['rateLimitsByLimitId'] = {}
+        self.assertEqual(set(_normalize_rate_limits(payload)), {'five_hour', 'seven_day'})
+        payload['rateLimitsByLimitId'] = None
+        self.assertEqual(set(_normalize_rate_limits(payload)), {'five_hour', 'seven_day'})
+
+    def test_unknown_durations(self):
+        self.assertEqual(set(_normalize_rate_limits(_load_fixture('05_unknown_durations.json'))), {'90_minute', '30_day'})
+
+    def test_word_and_digit_duration_forms(self):
+        one_day = {'rateLimits': {'primary': {'usedPercent': 1, 'windowDurationMins': 1440}, 'secondary': None}}
+        thirteen_hour = {'rateLimits': {'primary': {'usedPercent': 1, 'windowDurationMins': 780}, 'secondary': None}}
+        self.assertEqual(list(_normalize_rate_limits(one_day)), ['one_day'])
+        self.assertEqual(list(_normalize_rate_limits(thirteen_hour)), ['13_hour'])
+
+    def test_missing_duration_snapshot_uses_slot_name(self):
+        result = _normalize_rate_limits(_load_fixture('06_missing_duration.json'))
+        self.assertEqual(list(result), ['primary'])
+
+    def test_missing_reset_becomes_empty_string(self):
+        payload = {'rateLimits': {'primary': {'usedPercent': 40, 'windowDurationMins': 300}, 'secondary': None}}
+        self.assertEqual(_normalize_rate_limits(payload)['five_hour']['resets_at'], '')
+
+    def test_missing_duration_keyed_uses_slug(self):
+        payload = {'rateLimitsByLimitId': {'codex': {'primary': {'usedPercent': 5}, 'secondary': None}}}
+        self.assertEqual(list(_normalize_rate_limits(payload)), ['codex'])
+
+    def test_empty_slug_with_duration_uses_period_limit(self):
+        payload = {'rateLimitsByLimitId': {'--': {
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080}, 'secondary': None,
+        }}}
+        self.assertEqual(list(_normalize_rate_limits(payload)), ['seven_day_limit'])
+
+    def test_snapshot_collision_appends_slot(self):
+        payload = {'rateLimits': {
+            'primary': {'usedPercent': 1, 'windowDurationMins': 10080, 'resetsAt': 1},
+            'secondary': {'usedPercent': 2, 'windowDurationMins': 10080, 'resetsAt': 2},
+        }}
+        self.assertEqual(set(_normalize_rate_limits(payload)), {'seven_day', 'seven_day_secondary'})
+
+    def test_keyed_collision_appends_counter(self):
+        payload = {'rateLimitsByLimitId': {'codex': {
+            'primary': {'usedPercent': 1}, 'secondary': {'usedPercent': 2},
+        }}}
+        self.assertEqual(set(_normalize_rate_limits(payload)), {'codex', 'codex_2'})
+
+    def test_credits_metadata_ignored(self):
+        result = _normalize_rate_limits(_load_fixture('09_credits_metadata.json'))
+        self.assertEqual(set(result), {'five_hour'})
+        self.assertNotIn('extra_usage', result)
+
+
+class TestProfileNormalization(unittest.TestCase):
+    def test_chatgpt_account(self):
+        profile = _profile_from_account(_parse_account(_load_fixture('12_chatgpt_account.json')))
+        self.assertEqual(profile['account']['email'], 'User@Example.com')
+        self.assertEqual(profile['account']['uuid'], 'chatgpt:user@example.com')
+        self.assertEqual(profile['organization']['organization_type'], 'plus')
+
+    def test_signed_out_is_empty_dict(self):
+        self.assertEqual(_profile_from_account(_parse_account(_load_fixture('07_signed_out_account.json'))), {})
+
+    def test_missing_email_gives_none_fingerprint(self):
+        profile = _profile_from_account(_parse_account(_load_fixture('08_api_key_account.json')))
+        self.assertIsNone(profile['account']['uuid'])
+        self.assertEqual(profile['account']['email'], '')
+
+    def test_missing_plan_normalizes_to_empty_string(self):
+        profile = _profile_from_account(_parse_account({'account': {'type': 'chatgpt', 'email': 'a@b.c'}}))
+        self.assertEqual(profile['organization']['organization_type'], '')
+
+    def test_auth_type_is_normalized_for_classification_and_fingerprint(self):
+        account = _parse_account({'account': {
+            'type': 'ChatGPT', 'email': 'User@Example.com', 'planType': 'plus',
+        }})
+        self.assertEqual(account['type'], 'chatgpt')
+        profile = _profile_from_account(account)
+        self.assertEqual(profile['account']['uuid'], 'chatgpt:user@example.com')
+
+    def test_unusable_payload_is_unknown(self):
+        for payload in (None, {'requiresOpenaiAuth': True}, {'account': []}, {'account': {}}, {'account': {'type': 123}}):
+            with self.subTest(payload=payload):
+                self.assertIs(_parse_account(payload), api_module._UNKNOWN)
+        self.assertIsNone(_profile_from_account(api_module._UNKNOWN))
+
+
+class _FakeOperation:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    def request(self, method, params):
+        refresh = bool(params.get('refreshToken')) if method == 'account/read' else None
+        self.calls.append((method, refresh))
+        outcome = self.script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class _FakeTransport:
+    def __init__(self, script):
+        self.operation = _FakeOperation(script)
+
+    def run_operation(self, body):
+        return body(self.operation)
+
+
+def _run_adapter(script, allow_recovery=False):
+    transport = _FakeTransport(script)
+    with patch.object(api_module, '_transport', transport):
+        result = fetch_provider_data(allow_recovery=allow_recovery)
+    return result, transport.operation.calls
+
+
+CHATGPT_ACCOUNT = _load_fixture('12_chatgpt_account.json')
+SIGNED_OUT_ACCOUNT = _load_fixture('07_signed_out_account.json')
+API_KEY_ACCOUNT = _load_fixture('08_api_key_account.json')
+BEDROCK_ACCOUNT = _load_fixture('08b_bedrock_account.json')
+RATE_LIMITS_OK = _load_fixture('01_five_hour_plus_weekly.json')
+
+
+class TestAuthEvidenceDefaults(unittest.TestCase):
+    def test_production_auth_codes_are_empty_and_minus_32001_is_transient(self):
+        self.assertEqual(api_module.AUTH_ERROR_CODES, frozenset())
+        result, _ = _run_adapter([CHATGPT_ACCOUNT, _rpc_error_fixture('10_auth_error.json')])
+        self.assertEqual(result.usage['error'], api_module.T['connection_error'])
+        self.assertNotIn('auth_error', result.usage)
+
+
+class TestClassification(unittest.TestCase):
+    def setUp(self):
+        auth_codes = patch.object(api_module, 'AUTH_ERROR_CODES', frozenset({-32001}))
+        auth_codes.start()
+        self.addCleanup(auth_codes.stop)
+
+    def test_success_carries_usage_and_profile(self):
+        result, _ = _run_adapter([CHATGPT_ACCOUNT, RATE_LIMITS_OK])
+        self.assertIn('five_hour', result.usage)
+        self.assertEqual(result.profile['organization']['organization_type'], 'plus')
+        self.assertFalse(result.recovery_attempted)
+
+    def _assert_no_recovery(self, account, expected_error):
+        result, calls = _run_adapter([account, _rpc_error_fixture('10_auth_error.json')], allow_recovery=True)
+        self.assertEqual(result.usage['error'], expected_error)
+        self.assertFalse(result.recovery_attempted)
+        self.assertEqual(calls, [('account/read', False), ('account/rateLimits/read', None)])
+        return result
+
+    def test_signed_out_never_attempts_recovery(self):
+        result = self._assert_no_recovery(SIGNED_OUT_ACCOUNT, api_module.T['no_token'])
+        self.assertEqual(result.profile, {})
+        self.assertTrue(result.usage['no_auth'])
+
+    def test_api_key_never_attempts_recovery(self):
+        result = self._assert_no_recovery(API_KEY_ACCOUNT, api_module.T['not_chatgpt_auth'])
+        self.assertNotIn('auth_error', result.usage)
+
+    def test_bedrock_never_attempts_recovery(self):
+        self._assert_no_recovery(BEDROCK_ACCOUNT, api_module.T['not_chatgpt_auth'])
+
+    def test_chatgpt_auth_classification_is_case_insensitive(self):
+        account = {'account': {'type': 'ChatGPT', 'email': 'User@Example.com'}}
+        result, _ = _run_adapter([account, _rpc_error_fixture('10_auth_error.json')])
+        self.assertEqual(result.usage['error'], api_module.T['auth_expired'])
+        self.assertTrue(result.usage['auth_error'])
+
+    def test_method_not_found_on_required_methods_is_too_old(self):
+        result, _ = _run_adapter([CHATGPT_ACCOUNT, _rpc_error_fixture('11_method_not_found.json')])
+        self.assertEqual(result.usage['error'], api_module.T['codex_cli_too_old'])
+        result, calls = _run_adapter([_rpc_error_fixture('11_method_not_found.json')])
+        self.assertEqual(result.usage['error'], api_module.T['codex_cli_too_old'])
+        self.assertEqual(calls, [('account/read', False)])
+
+    def test_no_recovery_without_permission(self):
+        result, calls = _run_adapter([CHATGPT_ACCOUNT, _rpc_error_fixture('10_auth_error.json')])
+        self.assertEqual(result.usage['error'], api_module.T['auth_expired'])
+        self.assertTrue(result.usage['auth_error'])
+        self.assertFalse(result.recovery_attempted)
+        self.assertEqual(len(calls), 2)
+
+    def test_recovery_sequence_success(self):
+        result, calls = _run_adapter(
+            [CHATGPT_ACCOUNT, _rpc_error_fixture('10_auth_error.json'), CHATGPT_ACCOUNT, RATE_LIMITS_OK], True,
+        )
+        self.assertIn('five_hour', result.usage)
+        self.assertTrue(result.recovery_attempted)
+        self.assertEqual(calls, [
+            ('account/read', False), ('account/rateLimits/read', None),
+            ('account/read', True), ('account/rateLimits/read', None),
+        ])
+
+    def test_recovery_retry_classifies_actual_error(self):
+        result, _ = _run_adapter([
+            CHATGPT_ACCOUNT, _rpc_error_fixture('10_auth_error.json'), CHATGPT_ACCOUNT,
+            _rpc_error_fixture('10b_transient_error.json'),
+        ], True)
+        self.assertEqual(result.usage['error'], api_module.T['connection_error'])
+        self.assertNotIn('auth_error', result.usage)
+
+    def test_signed_out_during_recovery_replaces_stale_profile(self):
+        result, calls = _run_adapter([
+            CHATGPT_ACCOUNT, _rpc_error_fixture('10_auth_error.json'), SIGNED_OUT_ACCOUNT,
+            _rpc_error_fixture('10_auth_error.json'),
+        ], True)
+        self.assertEqual(result.profile, {})
+        self.assertTrue(result.recovery_attempted)
+        self.assertEqual(calls.count(('account/read', True)), 1)
+
+    def test_account_read_error_uses_rate_limits_error(self):
+        result, calls = _run_adapter([
+            _rpc_error_fixture('10b_transient_error.json'), _rpc_error_fixture('10b_transient_error.json'),
+        ], True)
+        self.assertEqual(result.usage['error'], api_module.T['connection_error'])
+        self.assertIsNone(result.profile)
+        self.assertEqual(len(calls), 2)
+
+    def test_transport_and_cli_failures_map_to_messages(self):
+        class BrokenTransport:
+            def run_operation(self, body):
+                raise TransportError('down')
+
+        class MissingTransport:
+            def run_operation(self, body):
+                raise CodexCliNotFound('missing')
+
+        with patch.object(api_module, '_transport', BrokenTransport()):
+            self.assertEqual(fetch_provider_data().usage['error'], api_module.T['connection_error'])
+        with patch.object(api_module, '_transport', MissingTransport()):
+            self.assertEqual(fetch_provider_data().usage['error'], api_module.T['codex_cli_not_found'])
+
+    def test_malformed_rate_limit_envelopes_become_connection_errors(self):
+        malformed = (
+            None,
+            [],
+            {},
+            {'rateLimits': ['not', 'a', 'mapping']},
+            {'rateLimitsByLimitId': {'codex': 'not a bucket'}},
+            {'rateLimitsByLimitId': {1: {'primary': {'usedPercent': 1}}}},
+            {'rateLimits': {'primary': {'usedPercent': 'abc'}}},
+            {'rateLimits': {'primary': {'usedPercent': {}}}},
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                result, _ = _run_adapter([CHATGPT_ACCOUNT, payload])
+                self.assertEqual(result.usage, {'error': api_module.T['connection_error']})
+                self.assertEqual(result.profile['account']['uuid'], 'chatgpt:user@example.com')
+
+    def test_malformed_window_is_skipped_when_another_window_is_valid(self):
+        payload = {'rateLimits': {
+            'primary': {'usedPercent': 'bad'},
+            'secondary': {'usedPercent': 25, 'windowDurationMins': 10080},
+        }}
+        result, _ = _run_adapter([CHATGPT_ACCOUNT, payload])
+        self.assertEqual(set(result.usage), {'seven_day'})
+        self.assertEqual(result.usage['seven_day']['utilization'], 25.0)
+
+    def test_invalid_reset_is_discarded_without_losing_utilization(self):
+        for reset in (True, -1, 1e300, 'not-a-timestamp'):
+            with self.subTest(reset=reset):
+                payload = {'rateLimits': {'primary': {
+                    'usedPercent': 25,
+                    'windowDurationMins': 300,
+                    'resetsAt': reset,
+                }}}
+                result, _ = _run_adapter([CHATGPT_ACCOUNT, payload])
+                self.assertEqual(result.usage['five_hour'], {'utilization': 25.0, 'resets_at': ''})
+
+    def test_non_finite_utilization_becomes_connection_error(self):
+        for percent in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(percent=percent):
+                self.assertFalse(math.isfinite(percent))
+                payload = {'rateLimits': {'primary': {'usedPercent': percent}}}
+                result, _ = _run_adapter([CHATGPT_ACCOUNT, payload])
+                self.assertEqual(result.usage, {'error': api_module.T['connection_error']})
+
+
+class TestRecoveryLatchAcrossGenerations(unittest.TestCase):
+    def test_single_refresh_read_across_operation_retry(self):
+        with TemporaryDirectory() as tmp:
+            log_path = str(Path(tmp) / 'log.jsonl')
+            transport = AppServerTransport(
+                command=[sys.executable, FAKE_APP_SERVER, '--scenario', 'die-after-refresh', '--log', log_path],
+                init_timeout=10,
+                rpc_timeout=3,
+            )
+            self.addCleanup(transport.shutdown)
+            with patch.object(api_module, '_transport', transport):
+                result = fetch_provider_data(allow_recovery=True)
+            self.assertTrue(result.recovery_attempted)
+            entries = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines()]
+            refresh_reads = [
+                entry for entry in entries
+                if entry.get('method') == 'account/read' and (entry.get('params') or {}).get('refreshToken')
+            ]
+            self.assertEqual(len(refresh_reads), 1)
+
+
+class TestRefreshProfile(unittest.TestCase):
+    def test_refresh_profile_returns_normalized_profile(self):
+        with patch.object(api_module, '_transport', _FakeTransport([CHATGPT_ACCOUNT])):
+            profile = refresh_profile()
+        self.assertEqual(profile['account']['uuid'], 'chatgpt:user@example.com')
+
+    def test_refresh_profile_signed_out_is_empty_dict(self):
+        with patch.object(api_module, '_transport', _FakeTransport([SIGNED_OUT_ACCOUNT])):
+            self.assertEqual(refresh_profile(), {})
+
+    def test_refresh_profile_none_on_failure(self):
+        class BrokenTransport:
+            def run_operation(self, body):
+                raise TransportError('down')
+
+        with patch.object(api_module, '_transport', BrokenTransport()):
+            self.assertIsNone(refresh_profile())
 
 
 if __name__ == '__main__':

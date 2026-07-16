@@ -79,10 +79,10 @@ class TestIdleAndLock(unittest.TestCase):
         with patch.object(linux, '_call_session_method', return_value=False):
             self.assertFalse(linux.is_workstation_locked())
 
-    def test_unknown_lock_state_reports_unlocked(self):
-        """An unreachable screensaver must not suppress notifications forever."""
+    def test_unknown_lock_state_remains_unknown(self):
+        """An unreachable lock service is explicitly unknown for private notifications."""
         with patch.object(linux, '_call_session_method', return_value=None):
-            self.assertFalse(linux.is_workstation_locked())
+            self.assertIsNone(linux.is_workstation_locked())
 
     def test_screensaver_reported_through_lock_state(self):
         """A running screensaver is reported as locked, so the probe stays False."""
@@ -346,7 +346,7 @@ class TestAutostart(unittest.TestCase):
         """Enabling writes a .desktop file into the autostart directory."""
         linux.set_autostart(True)
         self.assertTrue(linux.is_autostart_enabled())
-        content = (self.directory / 'usage-monitor-for-claude.desktop').read_text(encoding='utf-8')
+        content = (self.directory / 'usage-monitor-for-codex.desktop').read_text(encoding='utf-8')
         self.assertIn('[Desktop Entry]', content)
         self.assertIn('Type=Application', content)
         self.assertIn('X-GNOME-Autostart-enabled=true', content)
@@ -366,16 +366,16 @@ class TestAutostart(unittest.TestCase):
         """A second monitored account writes a separate entry."""
         with patch.object(linux, 'config_dir_suffix', return_value='-abc123'):
             linux.set_autostart(True)
-            self.assertTrue((self.directory / 'usage-monitor-for-claude-abc123.desktop').is_file())
+            self.assertTrue((self.directory / 'usage-monitor-for-codex-abc123.desktop').is_file())
         self.assertFalse(linux.is_autostart_enabled())
 
     def test_non_default_config_dir_in_exec(self):
         """A custom config directory is passed through on the Exec line."""
         with patch.object(linux, 'is_default_config_dir', return_value=False), \
-             patch.object(linux, 'effective_config_dir', return_value=Path('/home/u/.claude-second')):
+             patch.object(linux, 'effective_config_dir', return_value=Path('/home/u/.codex-second')):
             linux.set_autostart(True)
-        content = (self.directory / 'usage-monitor-for-claude.desktop').read_text(encoding='utf-8')
-        self.assertIn('--config-dir=/home/u/.claude-second', content)
+        content = (self.directory / 'usage-monitor-for-codex.desktop').read_text(encoding='utf-8')
+        self.assertIn('--codex-home=/home/u/.codex-second', content)
 
     def test_exec_quotes_paths_with_spaces(self):
         """A path containing spaces stays one argument."""
@@ -397,7 +397,7 @@ class TestAutostart(unittest.TestCase):
     def test_sync_rewrites_moved_executable(self):
         """A moved executable updates the stored Exec line."""
         linux.set_autostart(True)
-        path = self.directory / 'usage-monitor-for-claude.desktop'
+        path = self.directory / 'usage-monitor-for-codex.desktop'
         path.write_text(_autostart_entry_with_exec('/old/path'), encoding='utf-8')
         linux.sync_autostart_path()
         self.assertIn(linux._autostart_command(), path.read_text(encoding='utf-8'))
@@ -410,7 +410,7 @@ class TestAutostart(unittest.TestCase):
     def test_sync_leaves_matching_entry_untouched(self):
         """An up-to-date entry is not rewritten."""
         linux.set_autostart(True)
-        path = self.directory / 'usage-monitor-for-claude.desktop'
+        path = self.directory / 'usage-monitor-for-codex.desktop'
         before = path.stat().st_mtime_ns
         linux.sync_autostart_path()
         self.assertEqual(path.stat().st_mtime_ns, before)
@@ -692,7 +692,7 @@ class TestImportsWithoutPyGObject(unittest.TestCase):
             'assert linux.no_window_kwargs() == {}\n'
             "assert linux.system_time_format() in ('24h', '12h')\n"
             'assert linux.get_idle_seconds() == 0.0\n'
-            'assert linux.is_workstation_locked() is False\n'
+            'assert linux.is_workstation_locked() is None\n'
             'assert linux.is_screensaver_running() is False\n'
             'assert linux.taskbar_uses_light_theme() is False\n'
             'assert linux.double_click_seconds() == linux._DEFAULT_DOUBLE_CLICK_SECONDS\n'

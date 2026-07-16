@@ -17,7 +17,7 @@ If nothing user-facing changed, say so and stop.
 
 Entries describe changes **relative to the latest release tag**, not intermediate commits.
 
-- Before writing a **fix** entry, run `git log` (and compare against the latest `vX.Y.Z` tag) to confirm the bug existed in the latest release.
+- Before writing a **fix** entry, run `git log` (and compare against the latest fork `codex-vX.Y.Z` tag) to confirm the bug existed in the latest release.
 - If the bug was introduced **and** fixed within the current unreleased period, it gets **no** entry - the user never saw it.
 
 ## Step 3: Write the entry
@@ -26,7 +26,7 @@ Entries describe changes **relative to the latest release tag**, not intermediat
 - Write from the **user's perspective** - what changed and why it matters, not how the code changed.
 - One bullet per logical change; keep it to a single concise sentence.
 - When a change implements a GitHub Discussion or resolves a GitHub Issue, link it in the entry text, e.g.
-  `- [Feature name](https://github.com/jens-duttke/usage-monitor-for-claude/discussions/12) - description`
+  `- [Feature name](https://github.com/ihor-sokoliuk/usage-monitor-for-codex/discussions/12) - description`
 
 ## Step 4: Confirm
 

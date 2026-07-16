@@ -2,7 +2,7 @@
 Linux Launcher Tests
 ====================
 
-Tests for the ``usage-monitor-for-claude`` shell launcher in the project root.
+Tests for the ``usage-monitor-for-codex`` shell launcher in the project root.
 It is exercised through a stub interpreter in a temporary checkout, so the
 assertions cover what the script itself decides - which interpreter it picks,
 what it puts on ``PYTHONPATH``, and which working directory it leaves behind -
@@ -20,7 +20,7 @@ from tempfile import TemporaryDirectory
 if sys.platform == 'win32':
     raise unittest.SkipTest('The shell launcher is used on Linux only')
 
-LAUNCHER = Path(__file__).resolve().parent.parent / 'usage-monitor-for-claude'
+LAUNCHER = Path(__file__).resolve().parent.parent / 'usage-monitor-for-codex'
 
 # Reports what the launcher handed the interpreter, in place of starting the app.
 STUB_INTERPRETER = (

@@ -85,22 +85,20 @@ const LANGS = [
 // locale so every text case can be inspected in any language.
 const PRESETS = {
     full: {
-        profile: { email: 'user@example.com', plan: 'Max (Team)' },
+        profile: { email: 'user@example.com', plan: 'Team' },
         usage: [
             { unit: 'hour', suffix: '5hr', pct: 42, warn: false,
               reset: { kind: 'in', duration: '2h 30m', clock: '14:30' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.35 },
             { unit: 'week', suffix: '7 day', pct: 65, warn: true,
               reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
-            { unit: 'week', suffix: 'Sonnet', pct: 30, warn: false,
+            { unit: 'week', suffix: 'GPT-5.2-Codex', pct: 30, warn: false,
               reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
-            { unit: 'week', suffix: 'Opus', pct: 12, warn: false,
+            { unit: 'week', suffix: 'GPT-5.2', pct: 12, warn: false,
               reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
         ],
-        extra: { pct: 23, used: '$4.60', limit: '$20.00', balance: '$55.97' },
+        extra: null,
         installations: [
-            { name: 'CLI', version: '2.1.69' },
-            { name: 'VS Code', version: '2.1.69' },
-            { name: 'Cursor', version: '2.1.65' },
+            { name: 'Codex CLI', version: '0.101.0' },
         ],
         status: () => ({ last_success_time: now() - 3, next_poll_time: now() + 20, refreshing: false, error: null }),
     },
@@ -116,7 +114,7 @@ const PRESETS = {
         status: () => ({ last_success_time: now() - 90, next_poll_time: now() + 90, refreshing: false, error: null }),
     },
     error: {
-        profile: { email: 'user@example.com', plan: 'Max' },
+        profile: { email: 'user@example.com', plan: 'Plus' },
         usage: [
             { unit: 'hour', suffix: '5hr', pct: 95, warn: true,
               reset: { kind: 'in', duration: '12m', clock: '12:12' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.96 },
@@ -124,17 +122,17 @@ const PRESETS = {
               reset: { kind: 'tomorrow', clock: '08:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.80 },
         ],
         extra: null,
-        installations: [{ name: 'CLI', version: '2.1.69' }],
-        status: () => ({ last_success_time: now() - 300, next_poll_time: now() + 30, refreshing: false, error: 'Could not connect to Anthropic API.' }),
+        installations: [{ name: 'Codex CLI', version: '0.101.0' }],
+        status: () => ({ last_success_time: now() - 300, next_poll_time: now() + 30, refreshing: false, error: 'Codex app-server is unavailable.' }),
     },
     refreshing: {
-        profile: { email: 'user@example.com', plan: 'Max (Team)' },
+        profile: { email: 'user@example.com', plan: 'Team' },
         usage: [
             { unit: 'hour', suffix: '5hr', pct: 42, warn: false,
               reset: { kind: 'in', duration: '2h 30m', clock: '14:30' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.35 },
         ],
         extra: null,
-        installations: [{ name: 'CLI', version: '2.1.69' }],
+        installations: [{ name: 'Codex CLI', version: '0.101.0' }],
         // ~65 min ago -> exercises the "{h}h {m}m" duration variant in the footer.
         status: () => ({ last_success_time: now() - 3900, next_poll_time: null, refreshing: true, error: null }),
     },
@@ -251,8 +249,8 @@ async function applyLanguage(code) {
         } } };
     // Demo set so toggling the pin button previews compact hiding of both
     // whole sections and an individual usage bar.
-    const compactHide = ['account', 'extra_usage', 'claude_code', 'status', 'seven_day_opus'];
-    win().init({ colors: COLORS, t: buildTranslations(currentLocale), app_version: '1.13.0', compact_hide: compactHide, data: resolveData(currentPreset, currentLocale) });
+    const compactHide = ['account', 'extra_usage', 'claude_code', 'status', 'seven_day_gpt_5_2'];
+    win().init({ colors: COLORS, t: buildTranslations(currentLocale), app_version: '1.20.0', compact_hide: compactHide, data: resolveData(currentPreset, currentLocale) });
 }
 
 function loadPreset(name) {

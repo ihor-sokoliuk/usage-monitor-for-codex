@@ -404,8 +404,8 @@ class TestObjectNames(unittest.TestCase):
         with patch(f'{MODULE}.config_dir_suffix', return_value=''):
             mutex_name, mapping_name = si._object_names()
 
-        self.assertEqual(mutex_name, 'UsageMonitorForClaude_SingleInstance')
-        self.assertEqual(mapping_name, 'UsageMonitorForClaude_HolderPID')
+        self.assertEqual(mutex_name, 'UsageMonitorForCodex_SingleInstance')
+        self.assertEqual(mapping_name, 'UsageMonitorForCodex_HolderPID')
 
     def test_custom_config_dir_appends_suffix(self):
         """A custom config dir yields suffixed, per-instance names."""
@@ -414,17 +414,17 @@ class TestObjectNames(unittest.TestCase):
         with patch(f'{MODULE}.config_dir_suffix', return_value='_abc123def456'):
             mutex_name, mapping_name = si._object_names()
 
-        self.assertEqual(mutex_name, 'UsageMonitorForClaude_SingleInstance_abc123def456')
-        self.assertEqual(mapping_name, 'UsageMonitorForClaude_HolderPID_abc123def456')
+        self.assertEqual(mutex_name, 'UsageMonitorForCodex_SingleInstance_abc123def456')
+        self.assertEqual(mapping_name, 'UsageMonitorForCodex_HolderPID_abc123def456')
 
     def test_two_config_dirs_get_distinct_names(self):
         """Two different config dirs never collide on kernel object names."""
         import usage_monitor_for_claude.platforms.instance_win32 as si
 
         with TemporaryDirectory() as dir_a, TemporaryDirectory() as dir_b:
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': dir_a}):
+            with patch.dict('os.environ', {'CODEX_HOME': dir_a}):
                 names_a = si._object_names()
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': dir_b}):
+            with patch.dict('os.environ', {'CODEX_HOME': dir_b}):
                 names_b = si._object_names()
 
         self.assertNotEqual(names_a[0], names_b[0])

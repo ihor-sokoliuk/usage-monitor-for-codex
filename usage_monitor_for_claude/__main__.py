@@ -8,32 +8,32 @@ import sys
 import traceback
 from pathlib import Path
 
-from usage_monitor_for_claude.instance_id import parse_config_dir
+from usage_monitor_for_claude.instance_id import parse_codex_home
 from usage_monitor_for_claude.platforms import (
     no_window_kwargs, prepare_gui_environment, set_dpi_awareness, show_error_box,
 )
 
 _verbose = '--verbose' in sys.argv
 
-# --config-dir selects which Claude account to monitor. It must be
-# resolved into CLAUDE_CONFIG_DIR before any package import that reads the
+# --codex-home selects which Codex account to monitor. It must be
+# resolved into CODEX_HOME before any package import that reads the
 # variable: api, settings, verbose and i18n all read it at import or
 # first-use time. Keep every other package import below this block.
 #
 # instance_id and platforms are the only exceptions, imported above because
-# this block needs them. Neither reads CLAUDE_CONFIG_DIR at import time, and
+# this block needs them. Neither reads CODEX_HOME at import time, and
 # platforms cannot start doing so - settings imports platforms, so the
 # reverse would be a cycle.
-_config_dir = parse_config_dir(sys.argv)
+_config_dir = parse_codex_home(sys.argv)
 if _config_dir is not None:
     _config_path = Path(_config_dir)
     if not _config_path.is_dir():
         show_error_box(
-            f'--config-dir directory does not exist:\n{_config_dir}',
-            'Usage Monitor for Claude - Error',
+            f'--codex-home directory does not exist:\n{_config_dir}',
+            'Usage Monitor for Codex - Error',
         )
         sys.exit(1)
-    os.environ['CLAUDE_CONFIG_DIR'] = str(_config_path.resolve())
+    os.environ['CODEX_HOME'] = str(_config_path.resolve())
 
 # In frozen builds (console=False), stdout/stderr go nowhere.
 # --verbose attaches a console so diagnostics are visible.
@@ -47,43 +47,57 @@ if _verbose and getattr(sys, 'frozen', False):
 set_dpi_awareness()
 prepare_gui_environment()
 
-if _verbose:
-    from usage_monitor_for_claude.verbose import print_startup_diagnostics
-    print_startup_diagnostics()
+from usage_monitor_for_claude.logging_setup import configure_logging
+from usage_monitor_for_claude.settings import LOG_BACKUP_COUNT, LOG_MAX_BYTES
+
+try:
+    _log_path = configure_logging(verbose=_verbose, max_bytes=LOG_MAX_BYTES, backup_count=LOG_BACKUP_COUNT)
+except OSError as exc:
+    show_error_box(
+        f'Cannot create the application log next to the executable:\n{exc}',
+        'Usage Monitor for Codex - Logging Error',
+    )
+    sys.exit(1)
+
+_logger = logging.getLogger(__name__)
+
+
+def _log_diagnostics(callback) -> None:
+    """Write sanitized runtime diagnostics to the application log."""
+    from usage_monitor_for_claude.verbose import capture_diagnostics
+
+    for line in capture_diagnostics(callback).splitlines():
+        if line.strip():
+            _logger.info('diagnostic: %s', line.strip())
+
+
+from usage_monitor_for_claude.verbose import print_startup_diagnostics
+_log_diagnostics(print_startup_diagnostics)
 
 import webview  # type: ignore[import-untyped]  # no type stubs available
 
-from usage_monitor_for_claude.app import UsageMonitorForClaude, crash_log
+from usage_monitor_for_claude.app import UsageMonitorForCodex, crash_log
 from usage_monitor_for_claude.platforms import register_notification_identity
 from usage_monitor_for_claude.platforms.instance import ensure_single_instance, release_instance_lock
-
-if _verbose:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s %(levelname)-5s %(name)s: %(message)s',
-        datefmt='%H:%M:%S',
-    )
 
 _result: dict = {}
 _notification_identity_registered = False
 
 
 def _verbose_step(label: str) -> None:
-    """Print a startup progress step in verbose mode."""
-    if _verbose:
-        print(f'  [startup] {label}', flush=True)
+    """Log a startup progress step, mirrored to the console in verbose mode."""
+    _logger.info('startup: %s', label)
 
 
 def _run_app() -> None:
     """Run the tray application in a background thread (called by webview)."""
     try:
-        if _verbose:
-            from usage_monitor_for_claude.verbose import print_runtime_diagnostics
-            print_runtime_diagnostics()
+        from usage_monitor_for_claude.verbose import print_runtime_diagnostics
+        _log_diagnostics(print_runtime_diagnostics)
 
-        _verbose_step('UsageMonitorForClaude()...')
-        app = UsageMonitorForClaude(notification_identity_registered=_notification_identity_registered)
-        _verbose_step('UsageMonitorForClaude()... OK')
+        _verbose_step('UsageMonitorForCodex()...')
+        app = UsageMonitorForCodex(notification_identity_registered=_notification_identity_registered)
+        _verbose_step('UsageMonitorForCodex()... OK')
 
         _verbose_step('app.run...')
         app.run()
@@ -122,7 +136,11 @@ try:
     _verbose_step('webview.create_window... OK')
 
     _verbose_step('webview.start...')
-    webview.start(func=_run_app)
+    try:
+        webview.start(func=_run_app)
+    finally:
+        from usage_monitor_for_claude.api import shutdown_transport
+        shutdown_transport()
     _verbose_step('webview.start returned')
 
     app = _result.get('app')
@@ -131,7 +149,7 @@ try:
 
         passthrough_args = []
         if _config_dir is not None:
-            passthrough_args.append(f'--config-dir={os.environ["CLAUDE_CONFIG_DIR"]}')
+            passthrough_args.append(f'--codex-home={os.environ["CODEX_HOME"]}')
         if _verbose:
             passthrough_args.append('--verbose')
 

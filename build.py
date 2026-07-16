@@ -2,7 +2,7 @@
 Build Script
 =============
 
-Builds a standalone EXE for Usage Monitor for Claude using PyInstaller and code
+Builds a standalone EXE for Usage Monitor for Codex using PyInstaller and code
 signs it when a certificate is configured.
 
 Signing is optional. Without a `signing.env` beside this script the build
@@ -14,7 +14,7 @@ Usage:
     python build.py
 
 Produces:
-    dist/UsageMonitorForClaude.exe
+    dist/UsageMonitorForCodex.exe
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 DIST = ROOT / 'dist'
-SPEC = ROOT / 'usage_monitor_for_claude.spec'
+SPEC = ROOT / 'usage_monitor_for_codex.spec'
 SIGNING_CONFIG = ROOT / 'signing.env'
 
 
@@ -35,7 +35,7 @@ def build() -> None:
     cmd = [sys.executable, '-m', 'PyInstaller', '--clean', '--noconfirm', str(SPEC)]
     subprocess.check_call(cmd, cwd=str(ROOT))
 
-    exe = DIST / 'UsageMonitorForClaude.exe'
+    exe = DIST / 'UsageMonitorForCodex.exe'
     if not exe.exists():
         print('\nBuild failed - EXE not found.')
         sys.exit(1)

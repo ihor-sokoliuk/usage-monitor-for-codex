@@ -27,7 +27,7 @@ from .linux import ask_yes_no, show_topmost_error
 
 __all__ = ['ensure_single_instance', 'release_instance_lock']
 
-_LOCK_BASE_NAME = 'usage-monitor-for-claude'
+_LOCK_BASE_NAME = 'usage-monitor-for-codex'
 
 # Seconds to wait for a terminated holder to actually exit before giving up.
 _TERMINATE_TIMEOUT = 5.0
@@ -56,7 +56,7 @@ def _lock_directory() -> Path:
 def _lock_path() -> Path:
     """Return the per-instance lock file path.
 
-    The name carries a config-dir suffix so one monitor instance per Claude
+    The name carries a config-dir suffix so one monitor instance per Codex
     account can run concurrently, each a singleton for its own config
     directory.
     """

@@ -40,6 +40,17 @@ def _mock_normalize(locale_string):
     return NORMALIZE_MAP.get(locale_string, locale_string)
 
 
+class TestCodexKeys(unittest.TestCase):
+    """Every supported locale contains the Codex provider error keys."""
+
+    def test_new_keys_in_all_locales(self):
+        for locale_file in sorted(LOCALE_DIR.glob('*.json')):
+            data = json.loads(locale_file.read_text(encoding='utf-8'))
+            for key in ('not_chatgpt_auth', 'codex_cli_not_found', 'codex_cli_too_old'):
+                with self.subTest(locale=locale_file.name, key=key):
+                    self.assertIn(key, data)
+
+
 # ---------------------------------------------------------------------------
 # detect_lang_code
 # ---------------------------------------------------------------------------
@@ -274,7 +285,7 @@ class TestLocaleConsistency(unittest.TestCase):
         for lang, data in self.translations.items():
             for key in keys:
                 self.assertTrue(
-                    data[key].endswith('claude auth login'),
+                    data[key].endswith('codex login'),
                     f'{lang}.json key "{key}" does not end with the login command: {data[key]!r}',
                 )
 
@@ -296,6 +307,25 @@ class TestLocaleConsistency(unittest.TestCase):
                     f'{lang}.json key "{key}": expected {type(self.reference[key]).__name__}, '
                     f'got {type(data[key]).__name__}',
                 )
+
+
+class TestCodexCopy(unittest.TestCase):
+    REQUIRED_KEYS = {'notify_cli_update_title', 'notify_cli_update', 'codex_cli_too_old', 'codex_cli_not_found'}
+
+    def test_no_claude_or_anthropic_in_values(self):
+        for locale_file in sorted(LOCALE_DIR.glob('*.json')):
+            data = json.loads(locale_file.read_text(encoding='utf-8'))
+            for value in data.values():
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    if isinstance(item, str):
+                        self.assertNotIn('claude', item.lower(), locale_file.name)
+                        self.assertNotIn('anthropic', item.lower(), locale_file.name)
+
+    def test_codex_provider_copy_present_everywhere(self):
+        for locale_file in sorted(LOCALE_DIR.glob('*.json')):
+            data = json.loads(locale_file.read_text(encoding='utf-8'))
+            self.assertTrue(self.REQUIRED_KEYS <= set(data), locale_file.name)
 
 
 if __name__ == '__main__':

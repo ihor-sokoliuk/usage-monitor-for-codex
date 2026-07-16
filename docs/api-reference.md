@@ -1,184 +1,66 @@
-# API Reference
+# Codex app-server reference
 
-Example responses from the Anthropic OAuth API endpoints used by the app. These serve as implementation reference - field names, data types, and structure.
+The monitor reads provider data from a local `codex app-server` child. The protocol uses JSON-RPC 2.0 semantics over newline-delimited JSON, with the `"jsonrpc": "2.0"` member omitted on the wire.
 
-> [!NOTE]
-> These are real-world examples with anonymized data, captured in September 2026. Fields may change without notice as these are undocumented internal endpoints. If your API response contains fields not listed here, please open an issue with an anonymized example so we can keep this reference up to date.
+`codex app-server` is an experimental Codex interface. The monitor treats unknown errors as transient and reports method-not-found on required account methods as an outdated Codex CLI.
 
-## /api/oauth/usage
+## Methods used
 
-```
-https://api.anthropic.com/api/oauth/usage
-```
+| Method | Purpose | Monitor behavior |
+|---|---|---|
+| `initialize` / `initialized` | Start the connection | Declares no optional capabilities |
+| `account/read` | Read auth mode, email, and plan | Normally sends `refreshToken: false`; one recovery-enabled read per continuous failing episode may send `true` |
+| `account/rateLimits/read` | Read usage windows | Maps percent used, optional duration, and optional reset time into UI quota fields |
 
-Quota fields carry `utilization` and `resets_at`; the code-named ones (`nimbus_quill`, `tangelo`, and whichever appear next) are quota types Anthropic has not given a public name yet. Model-scoped weekly limits appear only in the `limits` array via `scope.model`. The `spend` block restates extra usage in money objects, where `balance` is the prepaid credit balance - `null` on every account observed so far, while the prepaid endpoint below returns a value for the same account.
+The normal poll performs one account read followed by one rate-limit read as a single logical provider operation. A child restart never mixes responses from different child generations.
 
-```json
-{
-  "five_hour": {
-    "utilization": 48.0,
-    "resets_at": "2026-09-05T12:59:59.966454+00:00",
-    "limit_dollars": null,
-    "used_dollars": null,
-    "remaining_dollars": null,
-    "locked_reason": null
-  },
-  "seven_day": {
-    "utilization": 64.0,
-    "resets_at": "2026-09-11T20:59:59.966479+00:00",
-    "limit_dollars": null,
-    "used_dollars": null,
-    "remaining_dollars": null,
-    "locked_reason": null
-  },
-  "seven_day_oauth_apps": null,
-  "seven_day_opus": null,
-  "seven_day_sonnet": {
-    "utilization": 2.0,
-    "resets_at": "2026-09-11T20:59:59.966479+00:00",
-    "limit_dollars": null,
-    "used_dollars": null,
-    "remaining_dollars": null,
-    "locked_reason": null
-  },
-  "seven_day_cowork": null,
-  "seven_day_omelette": null,
-  "tangelo": null,
-  "iguana_necktie": null,
-  "omelette_promotional": null,
-  "nimbus_quill": {
-    "utilization": 0.0,
-    "resets_at": null,
-    "limit_dollars": null,
-    "used_dollars": null,
-    "remaining_dollars": null,
-    "locked_reason": null
-  },
-  "cinder_cove": null,
-  "copper_kite": null,
-  "amber_ladder": null,
-  "juniper_tide": null,
-  "extra_usage": {
-    "is_enabled": true,
-    "monthly_limit": null,
-    "used_credits": 0.0,
-    "utilization": null,
-    "currency": "EUR",
-    "decimal_places": 2,
-    "disabled_reason": null,
-    "user_disabled": false,
-    "spend_limit_reached": false,
-    "credits_ever_enabled": true,
-    "daily": null,
-    "weekly": null
-  },
-  "limits": [
-    {
-      "kind": "session",
-      "group": "session",
-      "percent": 48,
-      "severity": "normal",
-      "resets_at": "2026-09-05T12:59:59.966454+00:00",
-      "scope": null,
-      "is_active": true
-    },
-    {
-      "kind": "weekly_all",
-      "group": "weekly",
-      "percent": 64,
-      "severity": "normal",
-      "resets_at": "2026-09-11T20:59:59.966479+00:00",
-      "scope": null,
-      "is_active": false
-    }
-  ],
-  "spend": {
-    "used": { "amount_minor": 0, "currency": "EUR", "exponent": 2 },
-    "limit": null,
-    "percent": 0,
-    "severity": "normal",
-    "enabled": true,
-    "disabled_reason": null,
-    "cap": null,
-    "balance": null,
-    "auto_reload": null,
-    "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
-    "can_purchase_credits": false,
-    "can_toggle": false
-  },
-  "member_dashboard_available": false
-}
-```
+## Notifications and server requests
 
-## /api/oauth/profile
+`account/updated` increments a monotonic authentication revision. The poll loop uses a revision change as an early account re-check hint; periodic polling remains authoritative.
 
-```
-https://api.anthropic.com/api/oauth/profile
-```
+Other notifications are ignored. An unexpected server-initiated request receives a method-not-found response so neither side waits indefinitely.
 
-```json
-{
-  "account": {
-    "uuid": "...",
-    "full_name": "Max Clau",
-    "display_name": "Max",
-    "email": "max@clau.de",
-    "has_claude_max": true,
-    "has_claude_pro": false,
-    "created_at": "2024-10-22T07:21:47.099776Z"
-  },
-  "organization": {
-    "uuid": "...",
-    "name": "max@clau.de's Organization",
-    "organization_type": "claude_max",
-    "billing_type": "stripe_subscription",
-    "rate_limit_tier": "default_claude_max_5x",
-    "has_extra_usage_enabled": true,
-    "subscription_status": "active",
-    "subscription_created_at": "2026-01-16T18:22:42.826732Z"
-  },
-  "application": {
-    "uuid": "...",
-    "name": "Claude Code",
-    "slug": "claude-code"
-  }
-}
-```
+## Rate-limit source selection
 
-## /api/oauth/organizations/{org_uuid}/prepaid/credits
+The response can provide a compatibility snapshot in `rateLimits` and keyed buckets in `rateLimitsByLimitId`.
 
-```
-https://api.anthropic.com/api/oauth/organizations/{org_uuid}/prepaid/credits
-```
+- A non-empty `rateLimitsByLimitId` mapping is normalized by itself, in sorted limit-ID order.
+- Otherwise the monitor uses the snapshot's `primary` then `secondary` window.
+- The two sources are never merged.
+- Null windows are skipped.
+- Credits metadata is ignored in v1.
 
-`{org_uuid}` is the `organization.uuid` from the profile response. Amounts are in minor units, so `5597` with `"exponent": 2` means 55.97. The money objects nested in the tranches are `null` on this endpoint, unlike the one behind the web app. The balance covers promotional credits as well as purchased ones, so `promo_tranches` alone can account for it.
+Each window uses `usedPercent` directly as percent consumed. `resetsAt` is a Unix timestamp converted to an aware ISO-8601 value; a missing reset becomes an empty string. `windowDurationMins` is optional.
+For non-default keyed buckets, a non-empty `limitName` is retained as display metadata so the UI can show the provider's model name instead of an internal metered-limit ID.
 
-```json
-{
-  "amount": 5597,
-  "currency": "EUR",
-  "balance": {
-    "money": { "amount_minor": 5597, "currency": "EUR", "exponent": 2 },
-    "credits": null
-  },
-  "balance_credits": null,
-  "auto_reload_settings": null,
-  "pending_invoice_amount_cents": null,
-  "last_paid_purchase_cents": null,
-  "expiry_policy_months": null,
-  "tranches": [],
-  "promo_tranches": [
-    {
-      "remaining_amount_minor_units": 5596,
-      "granted_amount_minor_units": 8500,
-      "currency": "EUR",
-      "expires_at": "2026-09-19T00:00:00Z",
-      "granted_at": null,
-      "remaining": null,
-      "granted": null,
-      "program_id": null
-    }
-  ],
-  "next_expires_at": "2026-09-19T00:00:00Z"
-}
-```
+## Field naming
+
+Known duration names use number words where available:
+
+| Minutes | Field |
+|---:|---|
+| 90 | `90_minute` |
+| 300 | `five_hour` |
+| 780 | `13_hour` |
+| 10080 | `seven_day` |
+| 43200 | `30_day` |
+
+For keyed buckets, a non-`codex` limit ID is sanitized and appended to a duration name, for example `seven_day_gpt_5_pro`. A keyed window without a duration uses the sanitized limit ID alone; an empty sanitized suffix falls back to `limit` or `<period>_limit`. These stable internal field names drive settings and event variables, while popup and tooltip labels prefer `limitName` when the provider supplies it.
+
+For snapshot windows, a missing duration falls back to its `primary` or `secondary` slot name. That fallback is deliberately displayable but unparseable, so it has a label and percentage without a time marker or dividers.
+
+Names are collision-proof within the selected source. A duplicate snapshot name gains a slot suffix such as `_secondary`; duplicate keyed names gain `_2`, `_3`, and so on.
+
+## Account states
+
+ChatGPT authentication supplies the plan usage displayed by this monitor. Signed-out, API-key, Amazon Bedrock, and method-not-found states are classified separately. Unknown app-server error codes remain transient unless live wire evidence establishes an exact authentication-error predicate.
+
+The monitor never reads `auth.json`, an OS keyring, or credential-store metadata. All account state comes from `account/read`.
+
+## Child lifecycle
+
+A logical poll pins one app-server generation across every required RPC and retries the whole operation at most once after child death. A ten-minute TTL is checked between operations; it never interrupts an operation in progress. Account and usage snapshots enter the cache atomically. Signed-out/authentication-error scheduled polls recycle the child every tenth error-cadence poll; manual popup refreshes do not advance that counter.
+
+Windows contains the child in a kill-on-close Job object. Linux uses a dedicated supervisor, an inherited control pipe, a subreaper, `/proc` ancestry checks, and pidfds to terminate and reap its owned descendants when the monitor exits. Linux requires a modern kernel with pidfd support. A monitor crash or SIGKILL closes the control pipe; externally killing the supervisor itself with SIGKILL, including an OOM kill, remains a containment limitation compared with the Windows Job object.
+
+The separately invoked official `codex update` command is serialized against provider operations after child shutdown. It is an updater, not a provider RPC or authentication-recovery mechanism.

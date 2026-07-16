@@ -42,9 +42,9 @@ class TestLoadSettings(unittest.TestCase):
         self.assertEqual(result, settings)
 
     def test_home_dir_fallback(self):
-        """Falls back to ~/.claude/ when no file next to app."""
+        """Falls back to ~/.codex/ when no file next to app."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
-            claude_dir = Path(home_tmp) / '.claude'
+            claude_dir = Path(home_tmp) / '.codex'
             claude_dir.mkdir()
             settings = {'bg': '#000000'}
             (claude_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
@@ -52,59 +52,59 @@ class TestLoadSettings(unittest.TestCase):
         self.assertEqual(result, settings)
 
     def test_custom_config_dir_fallback(self):
-        """Falls back to CLAUDE_CONFIG_DIR when no file next to app."""
+        """Falls back to CODEX_HOME when no file next to app."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as config_tmp:
             config_dir = Path(config_tmp)
             settings = {'bg': '#111111'}
             (config_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
-                 patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': config_tmp}), \
+                 patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
                  patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
     def test_home_claude_fallback_with_custom_config_dir(self):
-        """Falls back to ~/.claude/ when CLAUDE_CONFIG_DIR is set but has no settings file."""
+        """Falls back to ~/.codex/ when CODEX_HOME is set but has no settings file."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp, TemporaryDirectory() as config_tmp:
-            claude_dir = Path(home_tmp) / '.claude'
+            claude_dir = Path(home_tmp) / '.codex'
             claude_dir.mkdir()
             settings = {'bg': '#222222'}
             (claude_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': config_tmp}), \
+                 patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
                  patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
     def test_custom_config_dir_wins_over_home_claude(self):
-        """CLAUDE_CONFIG_DIR settings file takes priority over ~/.claude/."""
+        """CODEX_HOME settings file takes priority over ~/.codex/."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp, TemporaryDirectory() as config_tmp:
-            claude_dir = Path(home_tmp) / '.claude'
+            claude_dir = Path(home_tmp) / '.codex'
             claude_dir.mkdir()
             (claude_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps({'bg': '#home'}), encoding='utf-8')
             (Path(config_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps({'bg': '#custom'}), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': config_tmp}), \
+                 patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
                  patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result['bg'], '#custom')
 
     def test_config_dir_same_as_home_claude_no_duplicate(self):
-        """When CLAUDE_CONFIG_DIR equals ~/.claude/, the path is searched only once."""
+        """When CODEX_HOME equals ~/.codex/, the path is searched only once."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
-            claude_dir = Path(home_tmp) / '.claude'
+            claude_dir = Path(home_tmp) / '.codex'
             claude_dir.mkdir()
             settings = {'bg': '#333333'}
             (claude_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': str(claude_dir)}), \
+                 patch.dict('os.environ', {'CODEX_HOME': str(claude_dir)}), \
                  patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
@@ -116,22 +116,22 @@ class TestLoadSettings(unittest.TestCase):
             (Path(config_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps({'bg': '#custom'}), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
-                 patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': config_tmp}), \
+                 patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
                  patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result['bg'], '#custom')
 
     def test_app_dir_takes_priority(self):
-        """File next to app wins over ~/.claude/ file."""
+        """File next to app wins over ~/.codex/ file."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
-            app_settings = {'poll_interval': 60}
+            app_settings = {'poll_interval': 240}
             home_settings = {'poll_interval': 300}
             (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(app_settings), encoding='utf-8')
-            claude_dir = Path(home_tmp) / '.claude'
+            claude_dir = Path(home_tmp) / '.codex'
             claude_dir.mkdir()
             (claude_dir / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(home_settings), encoding='utf-8')
             result = _load(Path(app_tmp), Path(home_tmp))
-        self.assertEqual(result['poll_interval'], 60)
+        self.assertEqual(result['poll_interval'], 240)
 
     def test_all_popup_theme_colors_exported(self):
         """Every user-overridable popup theme color is part of the declared public API."""
@@ -245,8 +245,8 @@ class TestSettingsOverrides(unittest.TestCase):
 
     def test_unknown_keys_ignored(self):
         """Unknown keys in settings are silently ignored, overrides still applied."""
-        settings = {'unknown_key': 'value', 'poll_interval': 90}
-        self._assert_overrides(settings, [('poll_interval', 90)], absent=['poll_fast'])
+        settings = {'unknown_key': 'value', 'poll_interval': 240}
+        self._assert_overrides(settings, [('poll_interval', 240)], absent=['poll_fast'])
 
     def test_polling_overrides(self):
         """Polling constants are overridden by settings."""
@@ -273,9 +273,9 @@ class TestSettingsOverrides(unittest.TestCase):
             ('alert_thresholds_five_hour', [80]),
         ], absent=['alert_thresholds_seven_day'])
 
-    def test_notify_claude_update_override(self):
-        """notify_claude_update is overridden by settings; absent keeps the default on."""
-        self._assert_overrides({'notify_claude_update': False}, [('notify_claude_update', False)], absent=['alert_time_aware'])
+    def test_notify_codex_update_override(self):
+        """notify_codex_update is overridden by settings; absent keeps the default on."""
+        self._assert_overrides({'notify_codex_update': False}, [('notify_codex_update', False)], absent=['alert_time_aware'])
 
     def test_icon_color_override(self):
         """Icon color dicts are merged, JSON arrays become tuples."""
@@ -319,6 +319,18 @@ class TestSettingsOverrides(unittest.TestCase):
 
         for key in (absent or []):
             self.assertNotIn(key, loaded, f'{key} should not be in loaded settings')
+
+
+    def test_logging_and_updater_overrides(self):
+        settings = {
+            'auto_update_codex_cli': False,
+            'codex_update_interval': 3600,
+            'notify_codex_update': False,
+            'log_max_bytes': 4096,
+            'log_backup_count': 5,
+        }
+        self._assert_overrides(settings, list(settings.items()))
+
 
 
 class TestSettingsValidation(unittest.TestCase):
@@ -650,28 +662,28 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertNotIn('alert_time_aware', result)
         mock.assert_called_once()
 
-    def test_notify_claude_update_true_valid(self):
-        """Boolean true for notify_claude_update passes through."""
-        result, mock = self._run_validate({'notify_claude_update': True})
-        self.assertIs(result['notify_claude_update'], True)
+    def test_notify_codex_update_true_valid(self):
+        """Boolean true for notify_codex_update passes through."""
+        result, mock = self._run_validate({'notify_codex_update': True})
+        self.assertIs(result['notify_codex_update'], True)
         mock.assert_not_called()
 
-    def test_notify_claude_update_false_valid(self):
-        """Boolean false for notify_claude_update passes through."""
-        result, mock = self._run_validate({'notify_claude_update': False})
-        self.assertIs(result['notify_claude_update'], False)
+    def test_notify_codex_update_false_valid(self):
+        """Boolean false for notify_codex_update passes through."""
+        result, mock = self._run_validate({'notify_codex_update': False})
+        self.assertIs(result['notify_codex_update'], False)
         mock.assert_not_called()
 
-    def test_notify_claude_update_int_dropped(self):
-        """Integer 0 for notify_claude_update is dropped (must be boolean)."""
-        result, mock = self._run_validate({'notify_claude_update': 0})
-        self.assertNotIn('notify_claude_update', result)
+    def test_notify_codex_update_int_dropped(self):
+        """Integer 0 for notify_codex_update is dropped (must be boolean)."""
+        result, mock = self._run_validate({'notify_codex_update': 0})
+        self.assertNotIn('notify_codex_update', result)
         mock.assert_called_once()
 
-    def test_notify_claude_update_string_dropped(self):
-        """String 'false' for notify_claude_update is dropped."""
-        result, mock = self._run_validate({'notify_claude_update': 'false'})
-        self.assertNotIn('notify_claude_update', result)
+    def test_notify_codex_update_string_dropped(self):
+        """String 'false' for notify_codex_update is dropped."""
+        result, mock = self._run_validate({'notify_codex_update': 'false'})
+        self.assertNotIn('notify_codex_update', result)
         mock.assert_called_once()
 
     # Command validation (string or array of strings)
@@ -817,6 +829,33 @@ class TestSettingsValidation(unittest.TestCase):
         with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
         return result, mock_box
+
+
+    def test_poll_fast_greater_than_poll_interval_drops_conflicting_overrides(self):
+        result, mock = self._run_validate({'poll_interval': 60, 'poll_fast': 120, 'bg': '#000'})
+        self.assertNotIn('poll_interval', result)
+        self.assertNotIn('poll_fast', result)
+        self.assertEqual(result['bg'], '#000')
+        mock.assert_called_once()
+
+
+    def test_single_poll_override_is_checked_against_default(self):
+        result, mock = self._run_validate({'poll_interval': 60})
+        self.assertNotIn('poll_interval', result)
+        mock.assert_called_once()
+
+
+    def test_log_max_bytes_below_minimum_dropped(self):
+        result, mock = self._run_validate({'log_max_bytes': 1023})
+        self.assertNotIn('log_max_bytes', result)
+        mock.assert_called_once()
+
+
+    def test_log_backup_count_zero_dropped(self):
+        result, mock = self._run_validate({'log_backup_count': 0})
+        self.assertNotIn('log_backup_count', result)
+        mock.assert_called_once()
+
 
 
 class TestIconFieldsValidation(unittest.TestCase):
@@ -1380,6 +1419,9 @@ class TestQuickActionCommandAlias(unittest.TestCase):
         for key in ('quick_action_command', 'on_double_click_command'):
             with self.subTest(key=key):
                 self.assertIn(key, settings_mod._COMMAND_KEYS)
+
+
+
 
 
 if __name__ == '__main__':

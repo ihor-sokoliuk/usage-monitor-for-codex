@@ -11,18 +11,20 @@ label/value rows.
 from __future__ import annotations
 
 import importlib.metadata
+import io
 import locale
 import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Callable
 
-from .instance_id import effective_config_dir
 from .platforms import (
     DIAGNOSTIC_PACKAGES, diagnostic_display_rows, diagnostic_post_init_rows,
     diagnostic_runtime_rows, diagnostic_system_rows, setup_console,
 )
 
-__all__ = ['setup_console', 'print_startup_diagnostics', 'print_runtime_diagnostics']
+__all__ = ['capture_diagnostics', 'setup_console', 'print_startup_diagnostics', 'print_runtime_diagnostics']
 
 
 def _section(title: str) -> None:
@@ -64,14 +66,14 @@ def _redact_home(path_str: str) -> str:
     """Replace the user's home directory with ``~`` to avoid exposing the username.
 
     Case-insensitive (Windows paths compare that way, and e.g. a
-    ``CLAUDE_CONFIG_DIR`` set externally may be differently cased) and
+    ``CODEX_HOME`` set externally may be differently cased) and
     boundary-aware, so a sibling profile whose name merely starts with the
     username is not partially redacted.
 
     Both the literal and the resolved spelling of the home directory are
     compared, because the paths reaching this function differ: the
-    credentials path arrives resolved, while ``sys.executable``,
-    ``sys._MEIPASS`` and the ``CLAUDE_CONFIG_DIR`` row keep the spelling
+    application paths may arrive resolved, while ``sys.executable``,
+    ``sys._MEIPASS`` and the ``CODEX_HOME`` row keep the spelling
     they were given.  Where the home directory is reached through a symlink
     or a junction those two spellings differ, and matching only one of them
     would print the username in full.
@@ -89,22 +91,19 @@ def _redact_home(path_str: str) -> str:
     return path_str
 
 
-def _credentials_status() -> str:
-    """Check if the credentials file exists (never reads its content)."""
-    cred_path = effective_config_dir() / '.credentials.json'
-    display_path = _redact_home(str(cred_path))
-
-    if cred_path.exists():
-        return f'found ({display_path})'
-
-    return f'NOT FOUND ({display_path})'
+def capture_diagnostics(callback: Callable[[], None]) -> str:
+    """Return sanitized diagnostic output without writing to stdout."""
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        callback()
+    return buffer.getvalue()
 
 
 def print_startup_diagnostics() -> None:
     """Print system and environment diagnostics before webview starts."""
     from . import __version__
 
-    print(f'\n  Usage Monitor for Claude v{__version__} - Verbose Mode')
+    print(f'\n  Usage Monitor for Codex v{__version__} - Verbose Mode')
     print(f'  {"=" * 48}')
 
     _section('System')
@@ -124,7 +123,7 @@ def print_startup_diagnostics() -> None:
     _row('System locale', f'{sys_locale[0]}, {sys_locale[1]}' if sys_locale[0] else 'not set')
     _row('Filesystem encoding', sys.getfilesystemencoding())
     _row('Default encoding', sys.getdefaultencoding())
-    _row('CLAUDE_CONFIG_DIR', _redact_home(os.environ.get('CLAUDE_CONFIG_DIR', '')) or '(not set)')
+    _row('CODEX_HOME', _redact_home(os.environ.get('CODEX_HOME', '')) or '(not set)')
 
     _section('Display')
     for label, value in diagnostic_display_rows():
@@ -137,9 +136,6 @@ def print_startup_diagnostics() -> None:
     _section('Dependencies')
     for package in DIAGNOSTIC_PACKAGES:
         _row(package, _package_version(package))
-
-    _section('Credentials')
-    _row('File', _credentials_status())
 
     print()
 

@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Usage Monitor for Claude.
+PyInstaller spec file for Usage Monitor for Codex.
 
 Build:
-  pyinstaller usage_monitor_for_claude.spec
+  pyinstaller usage_monitor_for_codex.spec
 """
 
 a = Analysis(
@@ -63,7 +63,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='UsageMonitorForClaude',
+    name='UsageMonitorForCodex',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -73,6 +73,6 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    icon='usage_monitor_for_claude.ico',
+    icon='usage_monitor_for_codex.ico',
     version='version_info.py',
 )

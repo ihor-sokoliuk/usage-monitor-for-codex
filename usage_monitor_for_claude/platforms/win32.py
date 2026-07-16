@@ -38,7 +38,7 @@ __all__ = [
 ]
 
 # Third-party packages worth reporting in the diagnostics output.
-DIAGNOSTIC_PACKAGES = ('pywebview', 'pythonnet', 'clr-loader', 'pystray', 'Pillow', 'requests')
+DIAGNOSTIC_PACKAGES = ('pywebview', 'pythonnet', 'clr-loader', 'pystray', 'Pillow')
 
 # WebView2 registry GUIDs (runtime, beta, dev, canary)
 _WEBVIEW2_GUIDS = [
@@ -49,12 +49,12 @@ _WEBVIEW2_GUIDS = [
 ]
 
 AUTOSTART_REG_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
-AUTOSTART_REG_BASE_NAME = 'UsageMonitorForClaude'
+AUTOSTART_REG_BASE_NAME = 'UsageMonitorForCodex'
 
-# Stable per-application identity.  Every instance (one per Claude account)
+# Stable per-application identity.  Every instance (one per Codex account)
 # shares it, so notifications group under one name and logo.
-APP_USER_MODEL_ID = 'JensDuttke.UsageMonitorForClaude'
-DISPLAY_NAME = 'Usage Monitor for Claude'
+APP_USER_MODEL_ID = 'UsageMonitorForCodex.Desktop'
+DISPLAY_NAME = 'Usage Monitor for Codex'
 
 # Neutral branded logo (empty usage bars) shown as the notification icon.
 # A multi-size .ico (16-256 px) so Windows picks a crisp frame for the small
@@ -266,7 +266,7 @@ def _autostart_command() -> str:
     """Return the command line to store in the registry for this instance."""
     command = f'"{sys.executable}"'
     if not is_default_config_dir():
-        command += f' --config-dir="{effective_config_dir()}"'
+        command += f' --codex-home="{effective_config_dir()}"'
 
     return command
 

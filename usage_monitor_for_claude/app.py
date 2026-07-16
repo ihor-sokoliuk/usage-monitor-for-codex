@@ -6,6 +6,7 @@ System tray application class with adaptive polling and event handling.
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -16,9 +17,9 @@ from typing import Any
 
 import pystray  # type: ignore[import-untyped]  # no type stubs available
 
-from .api import api_headers, read_access_token
+from .api import auth_revision, restart_child
 from .cache import UsageCache
-from .claude_cli import PROJECT_URL
+from .codex_cli import PROJECT_URL
 from .command import run_event_command
 from .instance_id import effective_config_dir, is_default_config_dir
 from .platforms import (
@@ -27,16 +28,20 @@ from .platforms import (
     show_notification, sync_autostart_path, taskbar_uses_light_theme, watch_theme_change,
 )
 from .settings import (
-    ALERT_EXTRA_USAGE_SPENT, ALERT_TIME_AWARE, ALERT_TIME_AWARE_BELOW, ICON_FIELDS, IDLE_INTERVAL, IDLE_PAUSE,
-    NOTIFY_CLAUDE_UPDATE, ON_RESET_COMMAND, ON_STARTUP_COMMAND, ON_THRESHOLD_COMMAND, POLL_ERROR, POLL_FAST,
+    ALERT_EXTRA_USAGE_SPENT, ALERT_TIME_AWARE, ALERT_TIME_AWARE_BELOW, AUTO_UPDATE_CODEX_CLI, CODEX_UPDATE_INTERVAL,
+    ICON_FIELDS, IDLE_INTERVAL, IDLE_PAUSE,
+    NOTIFY_CODEX_UPDATE, ON_DOUBLE_CLICK_COMMAND, ON_RESET_COMMAND, ON_STARTUP_COMMAND, ON_THRESHOLD_COMMAND, POLL_ERROR, POLL_FAST,
     POLL_FAST_EXTRA, POLL_INTERVAL, QUICK_ACTION_COMMAND, get_alert_thresholds,
 )
-from .formatting import elapsed_pct, field_period, format_credits, format_tooltip, is_active_quota, parse_field_name, popup_label
+from .formatting import elapsed_pct, field_period, format_credits, format_tooltip, is_active_quota, parse_field_name, popup_label, resolve_display_fields
 from .i18n import T
 from .popup import UsagePopup, new_window_cache
 from .tray_icon import create_icon_image, create_status_image
 
-__all__ = ['UsageMonitorForClaude', 'crash_log']
+__all__ = ['UsageMonitorForCodex', 'crash_log']
+
+log = logging.getLogger(__name__)
+PYSTRAY_ICON_NAME = 'usage_monitor_for_codex'
 
 # Seconds after a reset at which to place the confirming poll.  A small buffer
 # absorbs minor timing differences (clocks, caches, server-side propagation).
@@ -98,8 +103,8 @@ def _align_to_reset(interval: int, next_reset: float | None) -> tuple[int, bool]
     return interval, False                     # reset still far - keep the normal cadence
 
 
-class UsageMonitorForClaude:
-    """System tray application displaying Claude usage."""
+class UsageMonitorForCodex:
+    """System tray application displaying Codex usage."""
 
     def __init__(self, notification_identity_registered: bool = False) -> None:
         """Set up the tray icon with context menu and polling state.
@@ -121,6 +126,9 @@ class UsageMonitorForClaude:
         self._prev_utilization: dict[str, float] = {}
         self._prev_account_uuid: str | None = None
         self._first_update_done = False
+        self._no_auth_notified = False
+        self._auth_error_streak = 0
+        self._last_codex_update_check: float | None = None
         self._notified_thresholds: dict[str, float] = {}
 
         # Adaptive polling state
@@ -144,11 +152,11 @@ class UsageMonitorForClaude:
         self.restart_requested = False
 
         # Non-default config dirs get a tooltip prefix so multiple
-        # instances (one per Claude account) can be told apart.
+        # instances (one per Codex account) can be told apart.
         self._tooltip_prefix = '' if is_default_config_dir() else f'[{effective_config_dir().name}] '
 
         self.icon = pystray.Icon(
-            'usage_monitor',
+            PYSTRAY_ICON_NAME,
             icon=create_icon_image(0, 0, self._light_taskbar),
             title=self._tooltip_prefix + T['loading'],
             menu=pystray.Menu(
@@ -339,18 +347,12 @@ class UsageMonitorForClaude:
             needs_profile = not self.cache.profile
             needs_refresh = self._should_refresh_usage()
 
-            # Single thread: ensure_profile(), update() and ensure_prepaid()
-            # all acquire cache._lock, so they must run sequentially.  Two
-            # threads would cause update()'s non-blocking acquire to fail while
-            # another call holds the lock.  The balance comes last because it
-            # needs the organization from the profile, and is skipped when the
-            # update has just read it.
+            # Profile and usage requests share the provider operation lock.
             def _bg_refresh() -> None:
                 if needs_profile:
                     self.cache.ensure_profile()
                 if needs_refresh:
                     self.update()
-                self.cache.ensure_prepaid()
             threading.Thread(target=_bg_refresh, daemon=True).start()
             UsagePopup(self, self._popup_windows)
         finally:
@@ -365,37 +367,32 @@ class UsageMonitorForClaude:
         """Re-render tray icon and tooltip from current state."""
         data = self._last_response
         if 'error' in data:
-            self.icon.icon = create_status_image('C!' if data.get('auth_error') else '!', self._light_taskbar)
+            self.icon.icon = create_status_image('>!' if data.get('auth_error') else '!', self._light_taskbar)
         else:
-            top_field, top_mode = ICON_FIELDS[0].split(':', 1) if ':' in ICON_FIELDS[0] else (ICON_FIELDS[0], 'utilization')
-            bottom_field, bottom_mode = ICON_FIELDS[1].split(':', 1) if ':' in ICON_FIELDS[1] else (ICON_FIELDS[1], 'utilization')
-            # isinstance instead of truthiness: a configured field may point at
-            # a non-dict response value (e.g. the raw limits array).
-            top_entry = data.get(top_field)
-            bottom_entry = data.get(bottom_field)
-            if not isinstance(top_entry, dict):
-                top_entry = {}
-            if not isinstance(bottom_entry, dict):
-                bottom_entry = {}
+            slots = resolve_display_fields(ICON_FIELDS, data, 2)
+            top_field, top_mode = (slots[0].split(':', 1) + ['utilization'])[:2] if slots[0] else ('', 'utilization')
+            bottom_field, bottom_mode = (slots[1].split(':', 1) + ['utilization'])[:2] if slots[1] else ('', 'utilization')
+            top_entry = data.get(top_field) or {}
+            bottom_entry = data.get(bottom_field) or {}
             pct_top = top_entry.get('utilization', 0) or 0
             pct_bottom = bottom_entry.get('utilization', 0) or 0
             top_period = field_period(top_field)
             bottom_period = field_period(bottom_field)
-            time_pct_top = elapsed_pct(top_entry.get('resets_at', ''), top_period) if top_period else None
-            time_pct_bottom = elapsed_pct(bottom_entry.get('resets_at', ''), bottom_period) if bottom_period else None
+            time_pct_top = elapsed_pct(top_entry.get('resets_at') or '', top_period) if top_period else None
+            time_pct_bottom = elapsed_pct(bottom_entry.get('resets_at') or '', bottom_period) if bottom_period else None
             extra = data.get('extra_usage') or {}
             extra_limit = extra.get('monthly_limit') or 0
             extra_used = extra.get('used_credits') or 0
-            # A missing/null monthly_limit means uncapped pay-as-you-go extra
-            # usage, which cannot be exhausted.
             extra_usage_available = bool(extra.get('is_enabled')) and (extra_limit <= 0 or extra_used < extra_limit)
             self.icon.icon = create_icon_image(
                 pct_top, pct_bottom, self._light_taskbar,
                 mode_top=top_mode, mode_bottom=bottom_mode,
                 time_pct_top=time_pct_top, time_pct_bottom=time_pct_bottom,
                 extra_usage_available=extra_usage_available,
+                bar_count=sum(slot is not None for slot in slots),
             )
         self.icon.title = self._tooltip_prefix + format_tooltip(data)
+
 
     def _on_theme_changed(self) -> None:
         """Re-render the tray icon when the Windows theme changes."""
@@ -409,67 +406,43 @@ class UsageMonitorForClaude:
 
     # Update orchestration
 
-    def update(self, force: bool = False) -> None:
+    def update(self, force: bool = False) -> bool:
         """Request a data refresh from the cache and process the result.
 
         Parameters
         ----------
         force : bool
-            When True, bypass the cache cooldown and the 429 rate-limit
-            backoff so the refresh happens immediately.  Used after a
-            confirmed account switch, where the freshly selected account
-            has no polling history that those throttles need to protect.
+            When True, bypass the cache cooldown and retained provider
+            backoff so a confirmed account switch refreshes immediately.
         """
-        result = self.cache.update(force=force, with_prepaid=self._popup_open)
+        result = self.cache.update(force=force)
         if result.data is None:
-            return
+            return False
 
         self._last_response = result.data
         self._render_tray()
 
-        # Handle CLI update notification from token refresh
-        if NOTIFY_CLAUDE_UPDATE and result.token_refresh and result.token_refresh.updated:
-            self._notify(
-                T['notify_update'].format(old=result.token_refresh.old_version, new=result.token_refresh.new_version),
-                T['notify_update_title'],
-            )
+        if result.data.get('no_auth') and not self._no_auth_notified:
+            self._no_auth_notified = True
+            self._notify(f"{T['warn_no_token']}\n{T['warn_login']}", T['popup_title'])
 
         if 'error' in result.data:
-            return
+            return True
 
-        # The credentials token changed after this usage data was fetched: the user switched
-        # accounts while the request was in flight, so the data still belongs to the previous
-        # account.  Comparing it against the new account's profile would announce the switch on
-        # top of the old account's numbers and consume the UUID baseline, leaving the stale data
-        # in place until the next regular poll.  Keep every baseline untouched instead - for a
-        # real switch the poll loop's token watcher forces an immediate refetch that reports it
-        # with the new data; a same-account token rotation just resumes on the next poll.
-        if result.token is not None and result.token != read_access_token():
-            return
+        self._no_auth_notified = False
 
-        # Detect account switch: re-fetch profile if the access token changed, then compare UUIDs.
-        # When the user runs 'claude auth login', the token changes and the next profile fetch
-        # returns a different account UUID, preventing a false quota-reset notification.
-        self.cache.ensure_profile()
+        # Compare the profile carried by this provider cycle with the previous
+        # fingerprint before interpreting utilization drops as quota resets.
         current_profile = self.cache.profile
-        current_account_uuid = (current_profile.get('account') or {}).get('uuid') if isinstance(current_profile, dict) else None
-
-        # Unknown identity with a known baseline: the profile fetch failed
-        # after a token change, so this usage data may already belong to a
-        # different account.  Skip all cross-poll comparisons and keep the
-        # baselines untouched; the poll where the profile is readable again
-        # detects the switch (or resumes normally for the same account).
-        if self._prev_account_uuid is not None and current_account_uuid is None:
-            return
-
+        current_account_uuid = current_profile.get('account', {}).get('uuid') if isinstance(current_profile, dict) else None
         if self._prev_account_uuid is not None and current_account_uuid is not None and current_account_uuid != self._prev_account_uuid:
-            email = (current_profile.get('account') or {}).get('email', '')
+            email = current_profile.get('account', {}).get('email', '')
             message = T['notify_account_switched'].format(email=email) if email else T['notify_account_switched_title']
             self._notify_or_defer('account_switched', message, T['notify_account_switched_title'])
             self._prev_utilization = {}
             self._notified_thresholds = {}
             self._prev_account_uuid = current_account_uuid
-            return
+            return True
         self._prev_account_uuid = current_account_uuid
 
         # Collect all quota fields with utilization (extra_usage has a different structure)
@@ -482,8 +455,6 @@ class UsageMonitorForClaude:
 
         # Notify when quota resets after being nearly exhausted, but only if no other quota is blocking usage.
         # While idle/locked, defer notifications until the user returns (avoids lock screen privacy concerns).
-        # The message carries no field information, so several quotas resetting
-        # within one polling gap still produce a single notification.
         reset_detected = False
         for key, pct in quota_fields.items():
             prev = self._prev_utilization.get(key)
@@ -512,8 +483,14 @@ class UsageMonitorForClaude:
 
         self._check_threshold_alerts(result.data)
 
-        # Adaptive polling: speed up when icon top field usage is increasing
-        icon_top_key = ICON_FIELDS[0].split(':', 1)[0]
+        # Adaptive polling: speed up when the currently resolved top icon field is increasing
+        resolved_icon_top = resolve_display_fields(ICON_FIELDS, result.data, 2)[0]
+        icon_top_key = resolved_icon_top.split(':', 1)[0] if resolved_icon_top else ''
+        if not icon_top_key:
+            icon_top_key = next(
+                (entry.split(':', 1)[0] for entry in ICON_FIELDS if entry.split(':', 1)[0] in quota_fields),
+                '',
+            )
         icon_top_pct = quota_fields.get(icon_top_key, 0)
         icon_top_prev = self._prev_utilization.get(icon_top_key)
         if icon_top_prev is not None and icon_top_pct > icon_top_prev:
@@ -527,6 +504,8 @@ class UsageMonitorForClaude:
             self._run_startup_command(result.data)
 
         self._first_update_done = True
+        return True
+
 
     # Notifications
 
@@ -569,7 +548,7 @@ class UsageMonitorForClaude:
     def _check_threshold_alerts(self, data: dict[str, Any]) -> None:
         """Show a notification when usage crosses a configured threshold.
 
-        Dynamically detects all quota fields in the API response.  For
+        Dynamically detects all quota fields in the provider response. For
         each field, finds the highest threshold exceeded by current
         utilization.  If it exceeds a threshold not yet notified, shows a
         single notification with the current usage percentage.  When usage
@@ -601,7 +580,7 @@ class UsageMonitorForClaude:
 
             if highest_exceeded > last_notified:
                 title = T['notify_threshold_title']
-                label = popup_label(variant_key)
+                label = popup_label(variant_key, entry.get('limit_name'))
                 message = T['notify_threshold_generic'].format(label=label, pct=f'{pct:.0f}')
                 self._notify_or_defer(f'threshold_{variant_key}', message, title)
                 self._run_threshold_command(variant_key, pct, highest_exceeded, entry, title, message)
@@ -610,6 +589,7 @@ class UsageMonitorForClaude:
                 self._notified_thresholds[variant_key] = highest_exceeded
 
         self._check_extra_usage_alerts(data)
+
 
     def _check_extra_usage_alerts(self, data: dict[str, Any]) -> None:
         """Show a notification when extra usage crosses a configured threshold.
@@ -688,16 +668,13 @@ class UsageMonitorForClaude:
         """Build environment variables describing the current quota state.
 
         Emits one ``USAGE_MONITOR_UTILIZATION_<FIELD>`` /
-        ``USAGE_MONITOR_RESETS_AT_<FIELD>`` pair per quota field that applies
-        to the account, so a quota the API only announces is left out, plus
-        ``USAGE_MONITOR_EXTRA_USED`` when paid extra usage is enabled and
-        ``USAGE_MONITOR_EXTRA_LIMIT`` when it also has a monthly limit (an
-        uncapped account has no limit to report).  Shared by the startup and
-        double-click commands.
+        ``USAGE_MONITOR_RESETS_AT_<FIELD>`` pair per detected quota field, plus
+        ``USAGE_MONITOR_EXTRA_USED`` / ``USAGE_MONITOR_EXTRA_LIMIT`` when paid
+        extra usage is enabled.  Shared by the startup and double-click commands.
         """
         env_vars: dict[str, str] = {}
         for key, entry in data.items():
-            if key == 'extra_usage' or not is_active_quota(key, entry):
+            if key == 'extra_usage' or not isinstance(entry, dict) or entry.get('utilization') is None:
                 continue
             env_vars[f'USAGE_MONITOR_UTILIZATION_{key.upper()}'] = str(round(entry.get('utilization', 0) or 0))
             env_vars[f'USAGE_MONITOR_RESETS_AT_{key.upper()}'] = entry.get('resets_at') or ''
@@ -714,18 +691,20 @@ class UsageMonitorForClaude:
 
         return env_vars
 
+
     def _run_startup_command(self, data: dict[str, Any]) -> None:
         """Run the user-configured startup command if set.
 
-        Fires once after the first successful API update.  Receives the
+        Fires once after the first successful provider update. Receives the
         full quota state so the command can decide what to do (e.g. only
-        ping Claude when no five-hour session is active).
+        invoke Codex when no five-hour session is active).
         """
         if not ON_STARTUP_COMMAND:
             return
 
         env_vars = {'USAGE_MONITOR_EVENT': 'startup', **self._quota_snapshot_env(data)}
         run_event_command(ON_STARTUP_COMMAND, env_vars)
+
 
     def _run_quick_action(self) -> None:
         """Run the user-configured quick action if set.
@@ -754,19 +733,17 @@ class UsageMonitorForClaude:
         if not ON_RESET_COMMAND:
             return
 
-        pct_5h = (data.get('five_hour') or {}).get('utilization', 0) or 0
-        pct_7d = (data.get('seven_day') or {}).get('utilization', 0) or 0
         run_event_command(ON_RESET_COMMAND, {
             'USAGE_MONITOR_EVENT': 'reset',
             'USAGE_MONITOR_VARIANT': variant,
             'USAGE_MONITOR_UTILIZATION': str(round(pct)),
             'USAGE_MONITOR_PREV_UTILIZATION': str(round(prev_pct)),
-            'USAGE_MONITOR_UTILIZATION_FIVE_HOUR': str(round(pct_5h)),
-            'USAGE_MONITOR_UTILIZATION_SEVEN_DAY': str(round(pct_7d)),
+            **self._quota_snapshot_env(data),
             'USAGE_MONITOR_RESETS_AT': entry.get('resets_at') or '',
             'USAGE_MONITOR_TITLE': T['notify_reset_title'],
             'USAGE_MONITOR_MESSAGE': T['notify_reset'],
         })
+
 
     def _run_threshold_command(
         self, variant: str, pct: float | None, threshold: float,
@@ -779,10 +756,6 @@ class UsageMonitorForClaude:
         so that already-exceeded thresholds at app startup do not trigger
         commands.  Notifications still fire - commands react to *events*,
         not *state*.
-
-        ``pct`` is None for spend-amount alerts, which have no utilization
-        percentage; ``USAGE_MONITOR_UTILIZATION`` is omitted from the
-        environment in that case.
         """
         if not ON_THRESHOLD_COMMAND or not self._first_update_done:
             return
@@ -790,21 +763,20 @@ class UsageMonitorForClaude:
         env_vars = {
             'USAGE_MONITOR_EVENT': 'threshold',
             'USAGE_MONITOR_VARIANT': variant,
-        }
-        if pct is not None:
-            env_vars['USAGE_MONITOR_UTILIZATION'] = str(round(pct))
-        env_vars.update({
             'USAGE_MONITOR_THRESHOLD': str(round(threshold)),
             'USAGE_MONITOR_RESETS_AT': entry.get('resets_at') or '',
             'USAGE_MONITOR_TITLE': title,
             'USAGE_MONITOR_MESSAGE': message,
-        })
+        }
+        if pct is not None:
+            env_vars['USAGE_MONITOR_UTILIZATION'] = str(round(pct))
         if extra_used:
             env_vars['USAGE_MONITOR_EXTRA_USED'] = extra_used
         if extra_limit:
             env_vars['USAGE_MONITOR_EXTRA_LIMIT'] = extra_limit
 
         run_event_command(ON_THRESHOLD_COMMAND, env_vars)
+
 
     # Polling
 
@@ -843,22 +815,16 @@ class UsageMonitorForClaude:
         return any(seconds <= 0 for seconds in self._reset_offsets())
 
     def _account_switched(self) -> bool:
-        """Return whether the current credentials belong to a different account.
-
-        Probes the account profile with the token now in the credentials
-        file (bypassing the 429 backoff, since a freshly selected account
-        cannot be the source of that rate limit) and compares its UUID
-        against the last seen one.  Returns False until a baseline UUID is
-        known, so the first successful update is never taken for a switch.
-        """
+        """Confirm whether fresh app-server account state has a new fingerprint."""
         if self._prev_account_uuid is None:
             return False
 
-        self.cache.ensure_profile(bypass_rate_limit=True)
+        self.cache.refresh_profile()
         profile = self.cache.profile
-        current_uuid = (profile.get('account') or {}).get('uuid') if isinstance(profile, dict) else None
+        current_uuid = profile.get('account', {}).get('uuid') if isinstance(profile, dict) else None
 
         return current_uuid is not None and current_uuid != self._prev_account_uuid
+
 
     def _reset_aligned_poll_target(self, next_reset: float) -> float:
         """Return the absolute time for a poll landing just after a reset.
@@ -948,13 +914,13 @@ class UsageMonitorForClaude:
 
     def _is_user_away(self) -> bool:
         """Return True if the user is idle or the workstation is locked."""
-        if is_workstation_locked():
+        if is_workstation_locked() is not False:
             return True
         return IDLE_PAUSE > 0 and get_idle_seconds() >= IDLE_PAUSE
 
     def _screen_hidden(self) -> bool:
         """Return True if the lock screen or a screensaver covers the display."""
-        return is_workstation_locked() or is_screensaver_running()
+        return is_workstation_locked() is not False or is_screensaver_running()
 
     def _polling_throttled(self) -> bool:
         """Return whether polling runs on the reduced away cadence.
@@ -977,15 +943,16 @@ class UsageMonitorForClaude:
         watcher keeps running on an unattended machine.  Coming back - or
         opening the popup - pulls the next poll back to the normal cadence.
         """
+        revision_seen = auth_revision()
+        self._maybe_update_codex_cli()
         self.cache.ensure_profile()
         force_next = False
         while self.running:
-            # Read before the update, not after: an account switch that lands while the
-            # request is in flight would otherwise already be part of the token read
-            # afterwards and never register as a change - leaving the previous account's
-            # usage on screen until the next regular poll.
-            token_seen = read_access_token()
-            self.update(force=force_next)
+            self._maybe_update_codex_cli()
+            counted_failed_poll = self._maybe_recycle_child()
+            update_completed = self.update(force=force_next)
+            if counted_failed_poll and not update_completed:
+                self._auth_error_streak = max(self._auth_error_streak - 1, 0)
             force_next = False
             interval = self._calculate_poll_interval()
 
@@ -996,19 +963,14 @@ class UsageMonitorForClaude:
             while self.running and time.time() < target:
                 time.sleep(1)
 
-                # React to a credentials token change between polls. A switch to
-                # a different account forces an immediate refresh (bypassing the
-                # cooldown) so the new account's usage shows right away. A token
-                # change while the last fetch failed auth is retried at once so a
-                # freshly refreshed token recovers usage and profile without
-                # waiting out the error cadence or needing a restart.
-                current_token = read_access_token()
-                if current_token and current_token != token_seen:
-                    token_seen = current_token
+                # Account notifications are hints confirmed by a fresh account read.
+                current_revision = auth_revision()
+                if current_revision != revision_seen:
+                    revision_seen = current_revision
                     if self._account_switched():
                         force_next = True
                         break
-                    if self._last_response.get('auth_error'):
+                    if self._last_response.get('auth_error') or self._last_response.get('no_auth'):
                         break
 
                 # Re-anchor the wait target after a backward clock jump -
@@ -1058,8 +1020,6 @@ class UsageMonitorForClaude:
             icon.visible = True
             if autostart_supported():
                 sync_autostart_path()
-            if not api_headers():
-                self._notify(f"{T['warn_no_token']}\n{T['warn_login']}", T['popup_title'])
             threading.Thread(target=watch_theme_change, args=(self._on_theme_changed,), daemon=True).start()
             self.poll_loop()
         except Exception:
@@ -1069,6 +1029,66 @@ class UsageMonitorForClaude:
         self.icon.run(setup=self._on_icon_ready)
 
 
+    def _maybe_recycle_child(self) -> bool:
+        """Count a scheduled auth-state failure and recycle every tenth child."""
+        if self._last_response.get('auth_error') or self._last_response.get('no_auth'):
+            self._auth_error_streak += 1
+            if self._auth_error_streak % 10 == 0:
+                restart_child()
+            return True
+
+        self._auth_error_streak = 0
+        return False
+
+
+    def _maybe_update_codex_cli(self, *, now: float | None = None) -> None:
+        """Periodically run the official Codex self-updater and notify on change."""
+        if not AUTO_UPDATE_CODEX_CLI:
+            return
+
+        current_time = time.monotonic() if now is None else now
+        if self._last_codex_update_check is not None and current_time - self._last_codex_update_check < CODEX_UPDATE_INTERVAL:
+            return
+
+        # Set before the potentially slow subprocess so a failure cannot cause
+        # rapid retries from concurrent or closely spaced poll-loop entries.
+        self._last_codex_update_check = current_time
+        result = self.cache.update_codex_cli()
+        if result.updated and NOTIFY_CODEX_UPDATE:
+            self._notify(
+                T['notify_cli_update'].format(old=result.old_version, new=result.new_version),
+                T['notify_cli_update_title'],
+            )
+
+
+    def on_test_double_click(self, icon: Any = None, item: Any = None) -> None:
+        run_event_command(ON_DOUBLE_CLICK_COMMAND, {
+            'USAGE_MONITOR_EVENT': 'double_click',
+            'USAGE_MONITOR_UTILIZATION_FIVE_HOUR': '30',
+            'USAGE_MONITOR_RESETS_AT_FIVE_HOUR': _future_iso(hours=3),
+            'USAGE_MONITOR_UTILIZATION_SEVEN_DAY': '55',
+            'USAGE_MONITOR_RESETS_AT_SEVEN_DAY': _future_iso(days=4),
+        }, capture_output=True)
+
+
+    def _run_double_click_command(self) -> None:
+        """Run the user-configured double-click command if set.
+
+        Receives the latest quota state (from the most recent successful
+        update) so the command can act on current usage, mirroring the
+        startup command's environment.  A double-click is a user-driven
+        action, so a command that exits with a non-zero code surfaces its
+        stderr in an error dialog (``capture_output``) instead of failing
+        silently - unlike the automatic reset/threshold/startup commands.
+        """
+        if not ON_DOUBLE_CLICK_COMMAND:
+            return
+
+        env_vars = {'USAGE_MONITOR_EVENT': 'double_click', **self._quota_snapshot_env(self._last_response)}
+        run_event_command(ON_DOUBLE_CLICK_COMMAND, env_vars, capture_output=True)
+
+
+
 def crash_log(msg: str) -> None:
     """Show a crash message box (for windowless EXE builds)."""
-    show_error_box(msg, 'Usage Monitor for Claude - Error')
+    show_error_box(msg, 'Usage Monitor for Codex - Error')

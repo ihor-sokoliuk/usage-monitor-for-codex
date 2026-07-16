@@ -1,67 +1,33 @@
 # Privacy Policy
 
-**Usage Monitor for Claude** is a local desktop application that monitors your Claude API usage.
-It runs on Windows and Linux.
+## Data processed locally
 
-## Data Collection
+Usage Monitor for Codex displays account email, plan, normalized quota utilization and reset times, and local Codex/IDE extension versions. Provider responses stay in memory. The monitor does not send telemetry, analytics, or crash reports.
 
-This application does **not** collect, store, or transmit any personal data.
+## Provider and network communication
 
-## Network Communication
+The built-in monitor makes no outbound provider/API request. Fixed local `codex app-server` RPCs over stdio supply account and usage data. The external Codex process owns its own authentication, network activity, and state changes according to your Codex configuration. The monitor drops credits metadata and has no active billing, prepaid balance, currency, or extra-usage spending feature.
 
-The application communicates exclusively with `api.anthropic.com` to retrieve your current API usage
-data and, when extra usage is enabled for your account, your prepaid credit balance while the detail
-popup is open. No other network connections are made.
+The separately invoked official `codex update` command may access the network and replace Codex installation files. It runs only after provider operations are serialized and the child is stopped. Disable automatic CLI updates in settings when another package manager owns the installation. Unsupported or failed updates never fall back to another installer.
 
-The server certificate is verified against the Windows certificate store, the same store your browser
-uses. A proxy that your organization has installed with its own root certificate can therefore inspect
-this connection, as it does in the browser. Windows performs this check itself, as it does for any other
-application, and may download a missing certificate authority certificate in the process.
+pywebview and its WebView2 or GTK/WebKit runtime may use local loopback and runtime caches. Opening project links uses your browser. Opt-in event commands can use the network, filesystem, or other applications with the same privileges as the monitor; their effects belong to those configured commands.
 
 ## Credentials
 
-The application reads your existing Claude OAuth token from the local Claude CLI configuration file
-(`~/.claude/.credentials.json`, the same path on both platforms). This token is:
+The monitor never accesses a credential store: no contents, path construction, existence check, timestamp, watcher, or metadata. All authentication state comes from `account/read`. Recovery asks the app-server for at most one refresh-enabled account read per continuous failure episode.
 
-- Used solely in HTTP Authorization headers to authenticate with the Anthropic API
-- Never logged, stored elsewhere, copied, or transmitted to any third party
+For multiple accounts, each home requires `cli_auth_credentials_store = "file"` before login. Distinct homes alone do not prove isolation when Codex uses a shared OS keyring. The monitor does not verify keyring isolation or inspect credentials to enforce this prerequisite.
 
-## Local Storage
+## Local storage and operating-system integration
 
-All usage data is kept in memory only and discarded when the application closes. An optional
-settings file (`usage-monitor-settings.json`) is read-only. The complete list of what the
-application changes on your system follows - there is nothing else.
+- The settings filename is `usage-monitor-for-codex-settings.json`. The monitor reads user-created settings but does not create or modify that file.
+- A rotating `usage-monitor-for-codex.log` is written beside the frozen EXE or in the source checkout. Custom homes add a stable hash suffix. Logs contain sanitized runtime diagnostics, fixed method names, timings, utilization summaries, classifications, update versions, and tracebacks. They exclude emails, tokens, credentials and metadata, raw payloads, raw Codex output, and event-command output. Startup fails visibly if the adjacent log cannot be opened.
+- Windows **Start at login** writes a current-user Run registry value; Linux writes an XDG autostart desktop entry. Codex identities are separate from the upstream monitor.
+- Single-instance ownership uses per-home Windows kernel objects or Linux lock files. Linux desktop status checks may query session D-Bus services. Unknown lock state defers account notifications.
+- Windows Job containment closes child processes with the monitor. Linux requires `/proc` and pidfd-capable kernels and uses a supervisor/control pipe plus subreaper to clean up owned descendants on monitor exit. External SIGKILL/OOM death of the Linux supervisor itself remains a cleanup limitation.
 
-**On Windows** no files are written at all. Two values are written to the registry, both under
-`HKEY_CURRENT_USER`:
-
-- `Software\Classes\AppUserModelId\JensDuttke.UsageMonitorForClaude` - the display name and icon
-  shown in the header of the application's notifications. Re-registered on every start.
-- `Software\Microsoft\Windows\CurrentVersion\Run` - the autostart entry. Written only when you
-  enable autostart from the tray menu, removed when you disable it again.
-
-**On Linux** the registry has no equivalent, so the same two concerns need files:
-
-- `~/.config/autostart/usage-monitor-for-claude.desktop` - the autostart entry. Written only when
-  you enable autostart from the tray menu, removed when you disable it again.
-- `$XDG_RUNTIME_DIR/usage-monitor-for-claude.lock` - a lock file that prevents a second instance
-  from running. It holds the process id and version, is created with owner-only permissions
-  (`0600`), and lives in the session's runtime directory, which the system clears at logout.
-
-Monitoring a second Claude account (`--config-dir`) adds a suffix to those names, so each account
-gets its own entry.
-
-## Claude Code Installation
-
-When the OAuth token has expired, the application runs `claude update` so that the Claude Code CLI
-renews the token in its own credentials file. As a side effect of that command, a newer Claude Code
-version may be installed. No other software on your system is modified.
-
-## Third-Party Services
-
-The application does not integrate with any analytics, tracking, advertising, or telemetry services.
+Disable autostart before removal, then delete the application, logs, any settings you created, and any source launcher symlink. The monitor does not remove Codex's own installation or state.
 
 ## Contact
 
-For questions about this privacy policy, please open an issue at
-https://github.com/jens-duttke/usage-monitor-for-claude/issues
+Report concerns through this fork's [issue tracker](https://github.com/ihor-sokoliuk/usage-monitor-for-codex/issues). Review diagnostics before sharing them; do not attach private settings, credential material, or unsanitized live probes.

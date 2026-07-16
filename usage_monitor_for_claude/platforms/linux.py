@@ -40,12 +40,12 @@ __all__ = [
 
 # Third-party packages worth reporting in the diagnostics output.  pythonnet
 # and clr-loader are part of the Windows WebView2 host and never installed here.
-DIAGNOSTIC_PACKAGES = ('pywebview', 'PyGObject', 'pystray', 'Pillow', 'requests')
+DIAGNOSTIC_PACKAGES = ('pywebview', 'PyGObject', 'pystray', 'Pillow')
 
 # XDG autostart: a .desktop file here is launched when the session starts.
 AUTOSTART_DIRECTORY = Path.home() / '.config' / 'autostart'
-AUTOSTART_BASE_NAME = 'usage-monitor-for-claude'
-APPLICATION_NAME = 'Usage Monitor for Claude'
+AUTOSTART_BASE_NAME = 'usage-monitor-for-codex'
+APPLICATION_NAME = 'Usage Monitor for Codex'
 
 # Session-bus endpoints. GNOME's Mutter reports idle time even on Wayland,
 # where no X11 equivalent of GetLastInputInfo exists.
@@ -183,13 +183,13 @@ def get_idle_seconds() -> float:
     return 0.0 if millis is None else float(millis) / 1000.0
 
 
-def is_workstation_locked() -> bool:
-    """Return True if the session's screen lock is active.
+def is_workstation_locked() -> bool | None:
+    """Return the lock state, or None when the session service is unavailable.
 
-    An unreachable screensaver service reports False - treating an unknown
-    state as "locked" would suppress notifications indefinitely.
+    Callers must defer sensitive notifications while lock state is unknown.
     """
-    return bool(_call_session_method(_SCREENSAVER_SERVICE, 'GetActive'))
+    active = _call_session_method(_SCREENSAVER_SERVICE, 'GetActive')
+    return None if active is None else bool(active)
 
 
 def is_screensaver_running() -> bool:
@@ -405,7 +405,7 @@ def _autostart_command() -> str:
         command = f'{shlex.quote(sys.executable)} -m usage_monitor_for_claude'
 
     if not is_default_config_dir():
-        command += f' --config-dir={shlex.quote(str(effective_config_dir()))}'
+        command += f' --codex-home={shlex.quote(str(effective_config_dir()))}'
 
     return command
 

@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 import webview  # type: ignore[import-untyped]  # no type stubs available
 
 from . import __version__
-from .claude_cli import CHANGELOG_URL, find_installations
-from .formatting import divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits, popup_label, time_until
+from .codex_cli import CHANGELOG_URL, find_installations
+from .formatting import divider_positions, elapsed_pct, expand_popup_fields, field_period, popup_label, time_until
 from .i18n import T
 from .platforms.popup import REUSE_WINDOW, WINDOW_KWARGS, PopupHost, popup_url
 from .settings import BAR_BG, BAR_DIVIDER, BAR_FG, BAR_FG_WARN, BAR_MARKER, BG, COMPACT_HIDE, FG, FG_DIM, FG_HEADING, FG_LINK, POPUP_FIELDS
@@ -33,7 +33,7 @@ _POPUP_DIR = Path(__file__).parent / 'popup'
 __all__ = ['PopupWindowCache', 'UsagePopup', 'new_window_cache']
 
 if TYPE_CHECKING:
-    from .app import UsageMonitorForClaude
+    from .app import UsageMonitorForCodex
     from .cache import CacheSnapshot
 
 
@@ -48,21 +48,12 @@ def _usage_entries(usage: dict[str, Any]) -> list[tuple[str, dict[str, Any] | No
     by field name when the pinned compact view is configured.
     """
     fields = expand_popup_fields(POPUP_FIELDS, usage)
-    return [(popup_label(key), usage.get(key), field_period(key), key) for key in fields]
-
-
-def _prepaid_balance_text(prepaid: dict[str, Any] | None) -> str:
-    """Return the rendered prepaid-credit balance line, or '' when unavailable."""
-    if not prepaid:
-        return ''
-
-    amount = prepaid.get('amount_minor')
-    if amount is None:
-        return ''
-
-    balance = format_credits(amount, prepaid.get('currency'), prepaid.get('decimal_places'))
-
-    return T['extra_usage_balance'].format(balance=balance)
+    result = []
+    for key in fields:
+        entry = usage.get(key)
+        limit_name = entry.get('limit_name') if isinstance(entry, dict) else None
+        result.append((popup_label(key, limit_name), entry, field_period(key), key))
+    return result
 
 
 def _snapshot_to_dict(
@@ -113,41 +104,8 @@ def _snapshot_to_dict(
                 'marker_rel': marker_rel,
             })
 
-    # Extra usage
+    # Codex quotas carry no billing or prepaid capability.
     extra = None
-    if snap.usage:
-        extra_data = snap.usage.get('extra_usage')
-        if extra_data and extra_data.get('is_enabled'):
-            used = extra_data.get('used_credits')
-            if used is not None:
-                limit = extra_data.get('monthly_limit', 0) or 0
-                currency = extra_data.get('currency')
-                decimal_places = extra_data.get('decimal_places')
-                balance_text = _prepaid_balance_text(snap.prepaid)
-                if limit > 0:
-                    pct = used / limit * 100
-                    extra = {
-                        'has_limit': True,
-                        'pct_text': f'{pct:.0f}%',
-                        'fill_pct': max(0.0, min(1.0, pct / 100)),
-                        'spent_text': T['extra_usage_spent'].format(
-                            used=format_credits(used, currency, decimal_places),
-                            limit=format_credits(limit, currency, decimal_places),
-                        ),
-                        'balance_text': balance_text,
-                    }
-                else:
-                    # No monthly cap (e.g. uncapped pay-as-you-go credits) - show
-                    # what has been spent without a percentage bar to imply a limit.
-                    extra = {
-                        'has_limit': False,
-                        'pct_text': '',
-                        'fill_pct': 0.0,
-                        'spent_text': T['extra_usage_spent_no_limit'].format(
-                            used=format_credits(used, currency, decimal_places),
-                        ),
-                        'balance_text': balance_text,
-                    }
 
     # Installations
     if installations is None:
@@ -358,7 +316,7 @@ class UsagePopup:
     _CHECK_MS = 2000
     _INITIAL_HEIGHT = 400
 
-    def __init__(self, app: UsageMonitorForClaude, window_cache: PopupWindowCache | None = None) -> None:
+    def __init__(self, app: UsageMonitorForCodex, window_cache: PopupWindowCache | None = None) -> None:
         """Create and display a popup window with usage details.
 
         Blocks the calling thread until the window is closed.
@@ -366,7 +324,7 @@ class UsagePopup:
 
         Parameters
         ----------
-        app : UsageMonitorForClaude
+        app : UsageMonitorForCodex
             Parent application providing ``cache`` for data access.
         window_cache : PopupWindowCache, optional
             Keeps the window alive between openings.  Without it the window is

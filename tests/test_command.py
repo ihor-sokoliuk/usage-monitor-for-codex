@@ -233,6 +233,7 @@ class TestRunEventCommandCaptureOutput(unittest.TestCase):
         box_message = mock_box.call_args[0][0]
         self.assertIn('the failure detail', box_message)
         self.assertIn('2', box_message)
+        self.assertEqual(mock_box.call_args[0][1], 'Usage Monitor for Codex - Event Command Failed')
 
     @patch('usage_monitor_for_claude.command.show_error_box')
     @patch('builtins.print')

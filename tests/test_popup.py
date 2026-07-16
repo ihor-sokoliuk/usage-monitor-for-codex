@@ -20,14 +20,13 @@ from usage_monitor_for_claude.popup import (
 
 
 def _snap(
-    usage=None, profile=None, prepaid=None, last_success_time=None,
+    usage=None, profile=None, last_success_time=None,
     refreshing=False, last_error=None, version=1,
 ) -> CacheSnapshot:
     """Build a CacheSnapshot with convenient defaults."""
     return CacheSnapshot(
         usage=usage or {},
         profile=profile,
-        prepaid=prepaid,
         last_success_time=last_success_time,
         refreshing=refreshing,
         last_error=last_error,
@@ -394,120 +393,9 @@ class TestSnapshotToDict(unittest.TestCase):
         self.assertEqual(len(result['usage']), 1)
         self.assertEqual(result['usage'][0]['pct_text'], '42%')
 
-    # -- extra usage --
-
     def test_no_extra_usage(self):
-        """Extra is None when no extra_usage key in usage dict."""
+        """The Codex popup does not expose a billing capability."""
         result = _snapshot_to_dict(_snap(), installations=[])
-        self.assertIsNone(result['extra'])
-
-    def test_extra_usage_disabled(self):
-        """Extra is None when extra usage is not enabled."""
-        usage = {'extra_usage': {'is_enabled': False, 'monthly_limit': 1000, 'used_credits': 500}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertIsNone(result['extra'])
-
-    def test_extra_usage_enabled_no_used_credits_key(self):
-        """Extra is None when used_credits is absent, even if enabled."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 1000}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertIsNone(result['extra'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_zero_limit_shows_no_cap_variant(self, _mock_credits):
-        """A zero monthly limit shows the no-cap spent text instead of hiding the section."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 0, 'used_credits': 0}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        extra = result['extra']
-        self.assertIsNotNone(extra)
-        self.assertFalse(extra['has_limit'])
-        self.assertEqual(extra['pct_text'], '')
-        self.assertIn('$0.00', extra['spent_text'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_null_limit_shows_no_cap_variant(self, _mock_credits):
-        """A null monthly_limit (uncapped pay-as-you-go credits) shows what has been spent."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': None, 'used_credits': 2981}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        extra = result['extra']
-        self.assertIsNotNone(extra)
-        self.assertFalse(extra['has_limit'])
-        self.assertIn('$29.81', extra['spent_text'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_calculation(self, _mock_credits):
-        """Extra usage computes percentage and formatted text correctly."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 10000, 'used_credits': 2500}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-
-        extra = result['extra']
-        self.assertIsNotNone(extra)
-        self.assertTrue(extra['has_limit'])
-        self.assertEqual(extra['pct_text'], '25%')
-        self.assertAlmostEqual(extra['fill_pct'], 0.25)
-        self.assertIn('$25.00', extra['spent_text'])
-        self.assertIn('$100.00', extra['spent_text'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_fill_clamped(self, _mock_credits):
-        """Extra usage fill is clamped to 1.0 when over limit."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 2000}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertEqual(result['extra']['fill_pct'], 1.0)
-
-    # -- prepaid balance --
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_prepaid_balance_rendered_with_limit(self, _mock_credits):
-        """The balance is rendered as an extra line next to the spent text."""
-        from usage_monitor_for_claude.i18n import T
-
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 10000, 'used_credits': 2500}}
-        prepaid = {'amount_minor': 5597, 'currency': 'EUR', 'decimal_places': 2}
-
-        result = _snapshot_to_dict(_snap(usage=usage, prepaid=prepaid), installations=[])
-
-        self.assertEqual(result['extra']['balance_text'], T['extra_usage_balance'].format(balance='$55.97'))
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_prepaid_balance_rendered_without_limit(self, _mock_credits):
-        """The balance is also rendered for uncapped extra usage."""
-        from usage_monitor_for_claude.i18n import T
-
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': None, 'used_credits': 2981}}
-        prepaid = {'amount_minor': 5597, 'currency': 'EUR', 'decimal_places': 2}
-
-        result = _snapshot_to_dict(_snap(usage=usage, prepaid=prepaid), installations=[])
-
-        self.assertEqual(result['extra']['balance_text'], T['extra_usage_balance'].format(balance='$55.97'))
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_zero_prepaid_balance_rendered(self, _mock_credits):
-        """A depleted balance is shown rather than hidden."""
-        from usage_monitor_for_claude.i18n import T
-
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 10000, 'used_credits': 2500}}
-
-        result = _snapshot_to_dict(_snap(usage=usage, prepaid={'amount_minor': 0}), installations=[])
-
-        self.assertEqual(result['extra']['balance_text'], T['extra_usage_balance'].format(balance='$0.00'))
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_missing_prepaid_balance_renders_empty(self, _mock_credits):
-        """Without a balance the extra section keeps exactly its previous content."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 10000, 'used_credits': 2500}}
-
-        for prepaid in (None, {}, {'amount_minor': None}):
-            with self.subTest(prepaid=prepaid):
-                result = _snapshot_to_dict(_snap(usage=usage, prepaid=prepaid), installations=[])
-                self.assertEqual(result['extra']['balance_text'], '')
-
-    def test_prepaid_balance_without_extra_usage_shows_nothing(self):
-        """The balance line lives in the extra-usage section, so it needs that section."""
-        prepaid = {'amount_minor': 5597, 'currency': 'EUR', 'decimal_places': 2}
-
-        result = _snapshot_to_dict(_snap(prepaid=prepaid), installations=[])
-
         self.assertIsNone(result['extra'])
 
     # -- installations --

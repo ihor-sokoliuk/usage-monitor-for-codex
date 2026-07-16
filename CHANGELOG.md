@@ -1,19 +1,76 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to Usage Monitor for Codex are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+This project is a fork of Jens Duttke's [Usage Monitor for Claude](https://github.com/jens-duttke/usage-monitor-for-claude). Fork releases appear first; complete historical upstream release notes follow with explicitly prefixed headings. Upstream-only provider and publication features described there are historical, not active Codex capabilities.
 
 ## [Unreleased]
 
 ### Added
 
-- The detail popup can now hide a single usage bar while still showing every other quota - add the field name with a leading `-` to [`popup_fields`](docs/configuration.md#popup-fields), e.g. `["*", "-iguana_necktie"]` (thanks to [@TheConfax](https://github.com/TheConfax) for reporting [#101](https://github.com/jens-duttke/usage-monitor-for-claude/issues/101) and to [@regisbsb](https://github.com/regisbsb) for the contribution)
+- Experimental Linux source launcher, GTK/WebKit popup, tray integration, per-home autostart and ownership identities, with supervised Codex child cleanup on pidfd-capable kernels.
+- A numbers icon style with stacked quota percentages and exact popup-field exclusions.
+- Distinct Windows notification identity and a Codex notification logo.
+- Optional local Windows executable signing with signature verification when an owner supplies a certificate configuration.
 
-[Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.24.0...HEAD)
+### Changed
 
-## [1.24.0] - 2026-10-19
+- Idle or locked sessions keep polling at a reduced cadence capped at ten minutes; an uncovered visible popup retains normal cadence, and private notifications remain deferred while lock state is unknown.
+- `quick_action_command` replaces the double-click setting while retaining `on_double_click_command` as an alias; normal actions now emit `USAGE_MONITOR_EVENT=quick_action`, so scripts matching the old `double_click` value must be updated.
+- Reconcile the full upstream platform/UI tree through v1.24.0 and popup exclusions while preserving the Codex app-server-only provider boundary and arbitrary quota windows.
+
+### Fixed
+
+- Retain upstream fixes for reusable Linux popup windows, panel anchoring, X11 scaling, pointer-sized Windows hook results, caller output redirection, and reset events without an active window.
+
+## [1.20.0] - 2026-07-19
+
+### Fixed
+
+- Popup windows now show reliably at their initial height, release their Win32 hooks when closed, serialize concurrent size changes, retry transient WebView failures, rebuild bars after quota-field changes, and keep markers centered.
+- Single-instance startup now detects holders created under different rights, revalidates the holder after the confirmation dialog, and refuses to start a duplicate when replacement cannot be proven.
+- Account/profile responses with null sections and configured display fields that resolve to non-quota values no longer break popup or tooltip rendering.
+- Unreadable IDE extension directories are skipped when collecting Codex installation versions.
+- Windows locale detection now recognizes Chinese script variants, Hindi, and Indonesian display names.
+- Settings files saved as UTF-8 with BOM are accepted, empty event-command strings disable the command, and empty command-array entries are rejected.
+- Deferred notifications flush promptly and safely after the user returns, while quotas resetting together produce only one reset notification.
+- A rate limit returned by the app-server recovery retry is shown as the current state and arms the requested backoff.
+- Backward system-clock jumps re-anchor cooldown, rate-limit, and scheduled-poll state instead of freezing the tray on stale data.
+- Popup-triggered fetches shortly before a reset no longer delay the reset-confirming poll.
+- The tray continues following theme changes after a transient render failure, keeps sub-100 percentages to two digits, and preserves overage semantics at the elapsed-time clamp.
+- Weekly dividers remain on actual local midnights across daylight-saving transitions.
+- Drive-root `--codex-home` values remain rooted, verbose diagnostics redact home paths case-insensitively without matching sibling profiles, and older Windows 10 builds fall back when the modern DPI API is unavailable.
+
+## [1.0.1] - 2026-07-16
+
+### Changed
+
+- Model-scoped usage windows use the provider's friendly model name instead of exposing an internal rate-limit identifier.
+
+### Fixed
+
+- When the configured session window is absent, the generic weekly window now stays above model-specific weekly windows and supplies the tray percentage and adaptive-polling signal.
+
+## [1.0.0] - 2026-07-16
+
+### Added
+
+- Initial Codex port: ChatGPT plan usage in the Windows system tray through the local `codex app-server`, with live tray bars, detail popup, smart alerts, event commands, adaptive polling, 13 languages, and multi-instance support through `--codex-home`.
+- Automatic Codex CLI update checks at startup and daily by default, with a notification when the installed version changes.
+- An always-on, size-rotated, sanitized application log beside the executable, with configurable size and backup count.
+
+### Changed
+
+- The tray icon draws only the available quota bars; a weekly-only account shows one centered bar instead of an empty second line.
+- Malformed provider payloads now produce a recoverable error state instead of terminating scheduled polling; invalid windows, percentages, and reset timestamps are isolated safely.
+- Custom Codex-home instances use distinct rotating log filenames, preventing concurrent accounts from colliding during rollover.
+- Event-command failure dialogs use Codex product identity, successful sign-in re-arms later signed-out notifications, conflicting polling intervals are rejected, and failed single-instance replacement no longer starts a duplicate monitor.
+
+# Historical upstream releases
+
+These entries preserve the original project history and attribution. Features, endpoints, package registrations and commands in this section describe that historical upstream product.
+
+## [Upstream 1.24.0] - 2026-10-19
 
 ### Changed
 
@@ -30,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.23.0...v1.24.0)
 
-## [1.23.0] - 2026-09-22
+## [Upstream 1.23.0] - 2026-09-22
 
 ### Added
 
@@ -52,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.22.0...v1.23.0)
 
-## [1.22.0] - 2026-09-03
+## [Upstream 1.22.0] - 2026-09-03
 
 ### Added
 
@@ -77,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.21.0...v1.22.0)
 
-## [1.21.0] - 2026-08-21
+## [Upstream 1.21.0] - 2026-08-21
 
 ### Added
 
@@ -94,7 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.20.0...v1.21.0)
 
-## [1.20.0] - 2026-07-17
+## [Upstream 1.20.0] - 2026-07-17
 
 ### Added
 
@@ -140,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.19.0...v1.20.0)
 
-## [1.19.0] - 2026-07-14
+## [Upstream 1.19.0] - 2026-07-14
 
 ### Added
 
@@ -155,7 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.18.1...v1.19.0)
 
-## [1.18.1] - 2026-07-09
+## [Upstream 1.18.1] - 2026-07-09
 
 ### Fixed
 
@@ -163,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.18.0...v1.18.1)
 
-## [1.18.0] - 2026-07-02
+## [Upstream 1.18.0] - 2026-07-02
 
 ### Added
 
@@ -177,7 +234,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.17.0...v1.18.0)
 
-## [1.17.0] - 2026-06-27
+## [Upstream 1.17.0] - 2026-06-27
 
 ### Added
 
@@ -191,7 +248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.16.0...v1.17.0)
 
-## [1.16.0] - 2026-06-13
+## [Upstream 1.16.0] - 2026-06-13
 
 ### Added
 
@@ -204,7 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.15.1...v1.16.0)
 
-## [1.15.1] - 2026-05-17
+## [Upstream 1.15.1] - 2026-05-17
 
 ### Fixed
 
@@ -212,7 +269,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.15.0...v1.15.1)
 
-## [1.15.0] - 2026-05-01
+## [Upstream 1.15.0] - 2026-05-01
 
 ### Added
 
@@ -233,7 +290,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.14.0...v1.15.0)
 
-## [1.14.0] - 2026-03-27
+## [Upstream 1.14.0] - 2026-03-27
 
 ### Added
 
@@ -245,7 +302,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.13.1...v1.14.0)
 
-## [1.13.1] - 2026-03-27
+## [Upstream 1.13.1] - 2026-03-27
 
 ### Fixed
 
@@ -253,7 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.13.0...v1.13.1)
 
-## [1.13.0] - 2026-03-21
+## [Upstream 1.13.0] - 2026-03-21
 
 ### Added
 
@@ -272,7 +329,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.12.0...v1.13.0)
 
-## [1.12.0] - 2026-03-20
+## [Upstream 1.12.0] - 2026-03-20
 
 ### Added
 
@@ -288,7 +345,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.11.0...v1.12.0)
 
-## [1.11.0] - 2026-03-20
+## [Upstream 1.11.0] - 2026-03-20
 
 ### Added
 
@@ -300,7 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.10.0...v1.11.0)
 
-## [1.10.0] - 2026-03-18
+## [Upstream 1.10.0] - 2026-03-18
 
 ### Added
 
@@ -314,7 +371,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.9.0...v1.10.0)
 
-## [1.9.0] - 2026-03-15
+## [Upstream 1.9.0] - 2026-03-15
 
 ### Added
 
@@ -327,7 +384,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.8.0...v1.9.0)
 
-## [1.8.0] - 2026-03-15
+## [Upstream 1.8.0] - 2026-03-15
 
 ### Added
 
@@ -341,7 +398,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.7.0...v1.8.0)
 
-## [1.7.0] - 2026-03-14
+## [Upstream 1.7.0] - 2026-03-14
 
 ### Added
 
@@ -355,7 +412,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.6.0...v1.7.0)
 
-## [1.6.0] - 2026-03-10
+## [Upstream 1.6.0] - 2026-03-10
 
 ### Added
 
@@ -368,7 +425,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.5.0...v1.6.0)
 
-## [1.5.0] - 2026-03-08
+## [Upstream 1.5.0] - 2026-03-08
 
 ### Added
 
@@ -400,7 +457,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.4.0...v1.5.0)
 
-## [1.4.0] - 2026-03-05
+## [Upstream 1.4.0] - 2026-03-05
 
 ### Changed
 
@@ -413,7 +470,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.3.0...v1.4.0)
 
-## [1.3.0] - 2026-03-02
+## [Upstream 1.3.0] - 2026-03-02
 
 ### Added
 
@@ -430,7 +487,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.2.0...v1.3.0)
 
-## [1.2.0] - 2026-03-01
+## [Upstream 1.2.0] - 2026-03-01
 
 ### Added
 
@@ -446,7 +503,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.1.0...v1.2.0)
 
-## [1.1.0] - 2026-02-28
+## [Upstream 1.1.0] - 2026-02-28
 
 ### Added
 
@@ -466,7 +523,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Show all code changes](https://github.com/jens-duttke/usage-monitor-for-claude/compare/v1.0.0...v1.1.0)
 
-## [1.0.0] - 2026-02-26
+## [Upstream 1.0.0] - 2026-02-26
 
 Initial release.
 

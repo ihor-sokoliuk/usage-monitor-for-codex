@@ -143,20 +143,20 @@ class TestCreateIconImage(unittest.TestCase):
         self.assertNotEqual(img_full.tobytes(), img_zero.tobytes())
 
     def test_boundary_zero_differs_from_one(self):
-        """0% (shows 'C') and 1% (shows percentage) produce different icons."""
+        """0% (shows the Codex prompt) and 1% (shows percentage) produce different icons."""
         img_zero = tray_icon_mod.create_icon_image(0, 0)
         img_one = tray_icon_mod.create_icon_image(1, 0)
 
         self.assertNotEqual(img_zero.tobytes(), img_one.tobytes())
 
     @patch.object(tray_icon_mod, 'load_font')
-    def test_zero_usage_calls_font_size_42(self, mock_font):
-        """Usage of 0% requests size 42 font for 'C' letter."""
+    def test_zero_usage_calls_font_size_36(self, mock_font):
+        """Usage of 0% requests size 42 font for the Codex prompt."""
         mock_font.return_value = _real_font()
 
         tray_icon_mod.create_icon_image(0, 0)
 
-        mock_font.assert_any_call(42)
+        mock_font.assert_any_call(36)
 
     @patch.object(tray_icon_mod, 'load_font')
     def test_nonzero_usage_calls_font_size_40(self, mock_font):
@@ -530,18 +530,18 @@ class TestCreateIconImageNumbersStyle(unittest.TestCase):
         mock_font.assert_any_call(40)
 
     @patch.object(tray_icon_mod, 'load_font')
-    def test_both_rows_zero_shows_single_c(self, mock_font):
-        """Both fields at 0% collapse to the single idle 'C' (size 42)."""
+    def test_both_rows_zero_shows_codex_prompt(self, mock_font):
+        """Both fields at 0% collapse to the single idle Codex prompt (size 36)."""
         mock_font.return_value = _real_font()
 
         tray_icon_mod.create_icon_image(0, 0)
 
-        mock_font.assert_any_call(42)
+        mock_font.assert_any_call(36)
         self.assertNotIn(call(40), mock_font.call_args_list)
 
     @patch.object(tray_icon_mod, 'load_font')
     def test_zero_row_beside_nonzero_shows_zero_digit(self, mock_font):
-        """A single zero row renders '0' - only both-zero collapses to 'C'."""
+        """A single zero row renders '0' - only both-zero collapses to the Codex prompt."""
         mock_font.return_value = _real_font()
 
         tray_icon_mod.create_icon_image(0, 50)
@@ -551,7 +551,7 @@ class TestCreateIconImageNumbersStyle(unittest.TestCase):
 
     @patch.object(tray_icon_mod, 'load_font')
     def test_fractional_usage_shows_rows_not_idle_c(self, mock_font):
-        """Usage in (0, 0.5) renders two '0' rows - only exactly zero collapses to 'C'."""
+        """Usage in (0, 0.5) renders two '0' rows - only exactly zero collapses to the Codex prompt."""
         mock_font.return_value = _real_font()
 
         tray_icon_mod.create_icon_image(0.3, 0.3)

@@ -8,6 +8,7 @@ elapsed period percentages, credit amounts, status lines, and tooltip text.
 from __future__ import annotations
 
 import locale as _locale
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,7 +17,7 @@ from .settings import CURRENCY_SYMBOL, TIME_FORMAT, TOOLTIP_FIELDS, _SYSTEM_CURR
 
 __all__ = [
     'divider_positions', 'elapsed_pct', 'expand_popup_fields', 'field_period', 'format_credits',
-    'format_tooltip', 'is_active_quota', 'parse_field_name', 'popup_label', 'time_until', 'tooltip_label',
+    'format_tooltip', 'is_active_quota', 'parse_field_name', 'popup_label', 'resolve_display_fields', 'time_until', 'tooltip_label',
 ]
 
 PERIOD_5H = 5 * 3600
@@ -26,8 +27,8 @@ _NUMBER_WORDS = {
     'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6,
     'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12,
 }
-_UNIT_SUFFIXES = {'hour': 'h', 'day': 'd'}
-_TITLE_CASE_EXCEPTIONS = {'oauth': 'OAuth', 'api': 'API', 'ai': 'AI'}
+_UNIT_SUFFIXES = {'minute': 'm', 'hour': 'h', 'day': 'd'}
+_TITLE_CASE_EXCEPTIONS = {'oauth': 'OAuth', 'api': 'API', 'ai': 'AI', 'gpt': 'GPT'}
 _CURRENCY_SYMBOLS = {
     'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CNY': '¥',
     'INR': '₹', 'KRW': '₩', 'BRL': 'R$', 'CAD': 'CA$', 'AUD': 'A$', 'CHF': 'CHF',
@@ -45,8 +46,8 @@ def parse_field_name(field: str) -> tuple[int, str, str | None] | None:
     Returns
     -------
     tuple or None
-        ``(number, unit, variant)`` where *number* is the parsed digit,
-        *unit* is the raw unit word (e.g. ``'hour'``, ``'day'``), and
+        ``(number, unit, variant)`` where *number* is the parsed number,
+        *unit* is the raw unit word (e.g. ``'minute'``, ``'hour'``, ``'day'``), and
         *variant* is the remaining suffix or ``None``.
         Returns ``None`` if the number word or unit is not recognized.
     """
@@ -54,7 +55,10 @@ def parse_field_name(field: str) -> tuple[int, str, str | None] | None:
     if len(parts) < 2:
         return None
 
-    number = _NUMBER_WORDS.get(parts[0])
+    if parts[0].isdigit():
+        number = int(parts[0])
+    else:
+        number = _NUMBER_WORDS.get(parts[0])
     unit = parts[1]
     if number is None or unit not in _UNIT_SUFFIXES:
         return None
@@ -68,13 +72,25 @@ def _title_case_variant(text: str) -> str:
     return ' '.join(_TITLE_CASE_EXCEPTIONS.get(w.lower(), w.title()) for w in text.split('_'))
 
 
-def tooltip_label(field: str) -> str:
+def _friendly_limit_name(limit_name: str) -> str:
+    """Format a provider model slug while preserving its punctuation."""
+    normalized = limit_name.strip().replace('_', '-')
+    return re.sub(
+        r'[A-Za-z]+',
+        lambda match: _TITLE_CASE_EXCEPTIONS.get(match.group(0).lower(), match.group(0).title()),
+        normalized,
+    )
+
+
+def tooltip_label(field: str, limit_name: str | None = None) -> str:
     """Generate a short tooltip label from an API field name.
 
     Parameters
     ----------
     field : str
         API field name, e.g. ``'five_hour'``, ``'seven_day_sonnet'``.
+    limit_name : str or None
+        Provider-supplied model name for a model-scoped limit.
 
     Returns
     -------
@@ -82,24 +98,27 @@ def tooltip_label(field: str) -> str:
         Short label like ``'5h'``, ``'7d'``, or ``'7d Sonnet'``.
         Falls back to title case of the full field name if unparseable.
     """
+    friendly_name = _friendly_limit_name(limit_name) if limit_name else None
     parsed = parse_field_name(field)
     if parsed is None:
-        return _title_case_variant(field)
+        return friendly_name or _title_case_variant(field)
 
     number, unit, variant = parsed
     label = f'{number}{_UNIT_SUFFIXES[unit]}'
     if variant:
-        label += f' {_title_case_variant(variant)}'
+        label += f' {friendly_name or _title_case_variant(variant)}'
     return label
 
 
-def popup_label(field: str) -> str:
+def popup_label(field: str, limit_name: str | None = None) -> str:
     """Generate a popup bar label from an API field name using i18n templates.
 
     Parameters
     ----------
     field : str
         API field name, e.g. ``'five_hour'``, ``'seven_day_sonnet'``.
+    limit_name : str or None
+        Provider-supplied model name for a model-scoped limit.
 
     Returns
     -------
@@ -107,19 +126,22 @@ def popup_label(field: str) -> str:
         Localized label like ``'Session (5hr)'`` or ``'Weekly (Sonnet)'``.
         Falls back to title case with abbreviation exceptions if unparseable.
     """
+    friendly_name = _friendly_limit_name(limit_name) if limit_name else None
     parsed = parse_field_name(field)
     if parsed is None:
-        return _title_case_variant(field)
+        return friendly_name or _title_case_variant(field)
 
     number, unit, variant = parsed
     if variant:
-        suffix = _title_case_variant(variant)
+        suffix = friendly_name or _title_case_variant(variant)
     elif unit == 'hour':
         suffix = f'{number}hr'
+    elif unit == 'minute':
+        suffix = f'{number}min'
     else:
         suffix = f'{number} {unit}'
 
-    template_key = 'session_label' if unit == 'hour' else 'weekly_label'
+    template_key = 'weekly_label' if unit == 'day' else 'session_label'
     return T[template_key].format(suffix=suffix)
 
 
@@ -136,6 +158,8 @@ def field_period(field: str) -> int | None:
         return None
 
     number, unit, _ = parsed
+    if unit == 'minute':
+        return number * 60
     if unit == 'hour':
         return number * 3600
     if unit == 'day':
@@ -143,37 +167,21 @@ def field_period(field: str) -> int | None:
     return None
 
 
-def is_active_quota(field: str, entry: Any) -> bool:
-    """Return True if a usage entry is a quota that applies to the account.
-
-    The API lists quota types before they apply, under code names (e.g.
-    ``nimbus_quill``), with a utilization of 0 and no reset window.  An entry
-    therefore counts only if it has a reset window, a name that parses, or
-    the ``from_account_limits`` marker set by ``_merge_scoped_limits()``.
-
-    Parameters
-    ----------
-    field : str
-        API field name.
-    entry : Any
-        Value of that field in the usage response.
-    """
-    if not isinstance(entry, dict) or entry.get('utilization') is None:
-        return False
-
-    return bool(entry.get('resets_at')) or parse_field_name(field) is not None or bool(entry.get('from_account_limits'))
-
-
 def _field_sort_key(field: str) -> tuple[int, int, int, str]:
-    """Sort key for default field ordering: shorter periods first, base before variants."""
-    parsed = parse_field_name(field)
-    if parsed is None:
-        return (2, 0, 0, field)
+    """Sort key: shorter period durations first, base before variants, unparseable fields last."""
+    period = field_period(field)
+    if period is None:
+        return (1, 0, 0, field)
 
-    number, unit, variant = parsed
-    unit_order = 0 if unit == 'hour' else 1
+    parsed = parse_field_name(field)
+    variant = parsed[2] if parsed else None
     variant_order = 0 if variant is None else 1
-    return (unit_order, number, variant_order, variant or '')
+    return (0, period, variant_order, variant or '')
+
+
+def is_active_quota(field: str, entry: dict[str, Any]) -> bool:
+    """Return whether normalized provider data contains a displayable quota."""
+    return isinstance(entry, dict) and entry.get('utilization') is not None
 
 
 def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> list[str]:
@@ -182,25 +190,23 @@ def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> 
     Parameters
     ----------
     popup_fields : list[str]
-        User-configured field list, possibly containing the ``'*'`` wildcard
-        and ``'-field'`` exclusions. Exclusions take precedence over all
-        inclusions, regardless of their position in the list.
+        User-configured field list, possibly containing ``'*'`` wildcard.
     usage_data : dict
         Raw API response dict.
 
     Returns
     -------
     list[str]
-        Ordered list of field names to display, with excluded, null, missing
-        and not-yet-active fields removed.
+        Ordered list of field names to display, with null/missing fields removed.
     """
     available = {
         key for key, value in usage_data.items()
-        if isinstance(value, dict) and 'resets_at' in value and is_active_quota(key, value)
+        if isinstance(value, dict) and 'utilization' in value and 'resets_at' in value
+        and value.get('utilization') is not None
     }
+
     excluded = {field[1:] for field in popup_fields if field.startswith('-')}
     available.difference_update(excluded)
-
     result: list[str] = []
     seen: set[str] = set()
 
@@ -217,6 +223,59 @@ def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> 
             result.append(field)
 
     return result
+
+
+def resolve_display_fields(configured: list[str], data: dict[str, Any], count: int) -> list[str | None]:
+    """Resolve configured display fields against the fields actually present in the data.
+
+    Available configured entries come first in configured order, including any
+    ``:mode`` suffix. Missing and duplicate entries are skipped, then remaining
+    detected fields fill the list in duration order using the default mode.
+    Slots with nothing left to show are ``None``.
+
+    Parameters
+    ----------
+    configured : list[str]
+        Configured field entries, e.g. ``['five_hour', 'seven_day:overage']``.
+    data : dict
+        Usage data dict (quota fields plus ``extra_usage``).
+    count : int
+        Number of slots to return; must be nonnegative.
+
+    Returns
+    -------
+    list[str or None]
+        Resolved field entries, always exactly *count* elements long.
+
+    Raises
+    ------
+    ValueError
+        If *count* is negative.
+    """
+    if count < 0:
+        raise ValueError('count must be nonnegative')
+
+    detected = []
+    for key, value in data.items():
+        if key == 'extra_usage' or not isinstance(value, dict):
+            continue
+        if 'utilization' not in value or 'resets_at' not in value:
+            continue
+        if value.get('utilization') is not None:
+            detected.append(key)
+    detected.sort(key=_field_sort_key)
+
+    remaining = detected.copy()
+    slots: list[str | None] = []
+    for entry in configured[:count]:
+        base = entry.split(':', 1)[0]
+        if base in remaining:
+            remaining.remove(base)
+            slots.append(entry)
+
+    slots.extend(remaining[:count - len(slots)])
+    slots.extend([None] * (count - len(slots)))
+    return slots
 
 
 def elapsed_pct(resets_at: str, period_seconds: int) -> float | None:
@@ -288,10 +347,6 @@ def divider_positions(resets_at: str, period_seconds: int) -> list[float]:
         start_local = start_utc.astimezone()
         end_local = reset_utc.astimezone()
 
-        # Walk local calendar days and convert each naive midnight separately:
-        # astimezone() re-evaluates the UTC offset per date, so a DST
-        # changeover inside the period keeps every divider on a true local
-        # midnight (adding timedeltas would carry the period-start offset).
         day = start_local.date() + timedelta(days=1)
 
         positions = []
@@ -448,10 +503,13 @@ def format_tooltip(data: dict[str, Any]) -> str:
         return f"{T['error_label']}\n{error[:80]}"
 
     lines = [T['tooltip_title']]
-    for key in TOOLTIP_FIELDS:
+    for resolved in resolve_display_fields(TOOLTIP_FIELDS, data, len(TOOLTIP_FIELDS)):
+        if resolved is None:
+            continue
+        key = resolved.split(':', 1)[0]
         entry = data.get(key)
         if isinstance(entry, dict) and entry.get('utilization') is not None:
-            short = tooltip_label(key)
+            short = tooltip_label(key, entry.get('limit_name'))
             pct = f"{entry['utilization']:.0f}%"
             reset = time_until(entry.get('resets_at', ''))
             line = f'{short}: {pct}'

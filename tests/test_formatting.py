@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.formatting import (
     PERIOD_5H, PERIOD_7D,
-    divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits,
-    format_tooltip, parse_field_name, popup_label, time_until, tooltip_label,
+    _field_sort_key, divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits,
+    format_tooltip, parse_field_name, popup_label, resolve_display_fields, time_until, tooltip_label,
 )
 from usage_monitor_for_claude.i18n import LOCALE_DIR
 
@@ -90,6 +90,12 @@ class TestTooltipLabel(unittest.TestCase):
     def test_seven_day_sonnet(self):
         self.assertEqual(tooltip_label('seven_day_sonnet'), '7d Sonnet')
 
+    def test_provider_limit_name_replaces_internal_variant(self):
+        self.assertEqual(
+            tooltip_label('seven_day_codex_bengalfox', 'gpt-5.2-codex-sonic'),
+            '7d GPT-5.2-Codex-Sonic',
+        )
+
     def test_seven_day_opus(self):
         self.assertEqual(tooltip_label('seven_day_opus'), '7d Opus')
 
@@ -143,6 +149,12 @@ class TestPopupLabel(unittest.TestCase):
     def test_seven_day_sonnet(self):
         self.assertEqual(popup_label('seven_day_sonnet'), 'Weekly (Sonnet)')
 
+    def test_provider_limit_name_replaces_internal_variant(self):
+        self.assertEqual(
+            popup_label('seven_day_codex_bengalfox', 'gpt-5.2-codex-sonic'),
+            'Weekly (GPT-5.2-Codex-Sonic)',
+        )
+
     def test_seven_day_opus(self):
         self.assertEqual(popup_label('seven_day_opus'), 'Weekly (Opus)')
 
@@ -188,6 +200,141 @@ class TestFieldPeriod(unittest.TestCase):
         self.assertIsNone(field_period('one_year'))
 
 
+@patch('usage_monitor_for_claude.formatting.T', EN)
+class TestExtendedFieldNames(unittest.TestCase):
+    """Digit prefixes and the minute unit (Codex window durations)."""
+
+    def test_parse_digit_day(self):
+        self.assertEqual(parse_field_name('30_day'), (30, 'day', None))
+
+    def test_parse_digit_hour(self):
+        self.assertEqual(parse_field_name('13_hour'), (13, 'hour', None))
+
+    def test_parse_minute_unit(self):
+        self.assertEqual(parse_field_name('90_minute'), (90, 'minute', None))
+
+    def test_parse_digit_with_variant(self):
+        self.assertEqual(parse_field_name('30_day_gpt_5_pro'), (30, 'day', 'gpt_5_pro'))
+
+    def test_parse_rejects_unknown_unit(self):
+        self.assertIsNone(parse_field_name('90_fortnight'))
+
+    def test_field_period_minute(self):
+        self.assertEqual(field_period('90_minute'), 90 * 60)
+
+    def test_label_matrix(self):
+        cases = [
+            ('90_minute', '90m', 'Session (90min)'),
+            ('five_hour', '5h', 'Session (5hr)'),
+            ('13_hour', '13h', 'Session (13hr)'),
+            ('seven_day', '7d', 'Weekly (7 day)'),
+            ('30_day', '30d', 'Weekly (30 day)'),
+            ('seven_day_gpt_5_pro', '7d GPT 5 Pro', 'Weekly (GPT 5 Pro)'),
+        ]
+        for field, tooltip, popup in cases:
+            with self.subTest(field=field):
+                self.assertEqual(tooltip_label(field), tooltip)
+                self.assertEqual(popup_label(field), popup)
+
+    def test_sort_by_duration_seconds(self):
+        fields = ['30_day', 'seven_day', '90_minute', 'five_hour', 'primary', 'seven_day_gpt_5_pro']
+        ordered = sorted(fields, key=_field_sort_key)
+        self.assertEqual(ordered, ['90_minute', 'five_hour', 'seven_day', 'seven_day_gpt_5_pro', '30_day', 'primary'])
+
+    def test_existing_relative_order_preserved(self):
+        fields = ['seven_day_opus', 'seven_day', 'five_hour']
+        self.assertEqual(sorted(fields, key=_field_sort_key), ['five_hour', 'seven_day', 'seven_day_opus'])
+
+
+class TestResolveDisplayFields(unittest.TestCase):
+    """Auto-substitution of absent configured fields for tray icon and tooltip."""
+
+    DATA_BOTH = {
+        'five_hour': {'utilization': 12, 'resets_at': 'x'},
+        'seven_day': {'utilization': 29, 'resets_at': 'y'},
+    }
+    DATA_WEEKLY_ONLY = {'seven_day': {'utilization': 29, 'resets_at': 'y'}}
+
+    def test_both_available_unchanged(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], self.DATA_BOTH, 2),
+            ['five_hour', 'seven_day'],
+        )
+
+    def test_missing_field_substituted(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], self.DATA_WEEKLY_ONLY, 2),
+            ['seven_day', None],
+        )
+
+    def test_available_configured_field_precedes_substitute(self):
+        self.assertEqual(
+            resolve_display_fields(['missing_field', 'five_hour'], self.DATA_BOTH, 2),
+            ['five_hour', 'seven_day'],
+        )
+
+    def test_zero_available(self):
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], {}, 2), [None, None])
+
+    def test_configured_duplicates_not_doubled(self):
+        self.assertEqual(
+            resolve_display_fields(['seven_day', 'seven_day'], self.DATA_BOTH, 2),
+            ['seven_day', 'five_hour'],
+        )
+
+    def test_more_than_two_detected(self):
+        data = dict(self.DATA_BOTH)
+        data['seven_day_gpt_5_pro'] = {'utilization': 3, 'resets_at': 'z'}
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'missing_field'], data, 2),
+            ['five_hour', 'seven_day'],
+        )
+
+    def test_base_weekly_precedes_variant_when_session_is_absent(self):
+        data = {
+            'seven_day': {'utilization': 1, 'resets_at': 'x'},
+            'seven_day_codex_bengalfox': {'utilization': 0, 'resets_at': 'y'},
+        }
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], data, 2),
+            ['seven_day', 'seven_day_codex_bengalfox'],
+        )
+
+    def test_mode_suffix_kept_for_existing_and_default_for_substituted(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour:overage', 'no_such:overage'], self.DATA_BOTH, 2),
+            ['five_hour:overage', 'seven_day'],
+        )
+
+    def test_extra_usage_never_selected(self):
+        data = {
+            'extra_usage': {'is_enabled': True, 'used_credits': 1, 'monthly_limit': 2},
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_tooltip_length_count(self):
+        self.assertEqual(resolve_display_fields(['five_hour'], self.DATA_BOTH, 1), ['five_hour'])
+
+    def test_missing_resets_at_is_not_a_quota_field(self):
+        data = {
+            'five_hour': {'utilization': 12},
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_non_dict_value_is_not_a_quota_field(self):
+        data = {
+            'five_hour': 'malformed',
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_negative_count_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_display_fields(['five_hour'], self.DATA_BOTH, -1)
+
+
 # ---------------------------------------------------------------------------
 # expand_popup_fields
 # ---------------------------------------------------------------------------
@@ -216,61 +363,6 @@ class TestExpandPopupFields(unittest.TestCase):
         usage = self._usage(five_hour=10, seven_day=20, seven_day_sonnet=30)
         result = expand_popup_fields(['seven_day_sonnet', '*'], usage)
         self.assertEqual(result, ['seven_day_sonnet', 'five_hour', 'seven_day'])
-
-    def test_exclusion_applies_before_or_after_wildcard(self):
-        """An exclusion hides an active code-named quota wherever it appears."""
-        usage = self._usage(seven_day=20, five_hour=10)
-        usage['iguana_necktie'] = {'utilization': 30, 'resets_at': '2026-01-01T00:00:00Z'}
-        for fields in (['*', '-iguana_necktie'], ['-iguana_necktie', '*']):
-            with self.subTest(popup_fields=fields):
-                self.assertEqual(expand_popup_fields(fields, usage), ['five_hour', 'seven_day'])
-
-    def test_exclusion_overrides_explicit_inclusion(self):
-        """Explicitly naming a field cannot restore a globally excluded quota."""
-        usage = self._usage(five_hour=10, seven_day=20)
-        for fields in (
-            ['five_hour', '-five_hour', 'seven_day'],
-            ['-five_hour', 'five_hour', 'seven_day'],
-            ['five_hour', '*', '-five_hour'],
-            ['-five_hour', '*', 'five_hour'],
-        ):
-            with self.subTest(popup_fields=fields):
-                self.assertEqual(expand_popup_fields(fields, usage), ['seven_day'])
-
-    def test_exclusion_preserves_explicit_and_wildcard_order(self):
-        """Removing one quota preserves the configured positions of the others."""
-        usage = self._usage(seven_day_sonnet=30, seven_day_opus=40, seven_day=20, five_hour=10)
-        for fields in (
-            ['seven_day_sonnet', '*', '-seven_day'],
-            ['-seven_day', 'seven_day_sonnet', '*'],
-            ['seven_day_sonnet', '-seven_day', '*'],
-        ):
-            with self.subTest(popup_fields=fields):
-                self.assertEqual(expand_popup_fields(fields, usage), ['seven_day_sonnet', 'five_hour', 'seven_day_opus'])
-
-    def test_exclusions_match_exact_field_names(self):
-        """Excluding a base quota leaves variants and similarly named quotas visible."""
-        usage = self._usage(five_hour=10, five_hour_sonnet=20, seven_day=30)
-        self.assertEqual(expand_popup_fields(['*', '-five_hour'], usage), ['five_hour_sonnet', 'seven_day'])
-
-    def test_multiple_duplicate_and_unknown_exclusions(self):
-        """Repeated or unavailable exclusions do not disturb the remaining quotas."""
-        usage = self._usage(seven_day_sonnet=30, seven_day=20, five_hour=10)
-        fields = ['-five_hour', '*', '-seven_day', '-five_hour', '-unknown_quota']
-        self.assertEqual(expand_popup_fields(fields, usage), ['seven_day_sonnet'])
-
-    def test_exclusions_without_inclusions_show_no_fields(self):
-        """An exclusion-only list does not implicitly add a wildcard."""
-        usage = self._usage(five_hour=10, seven_day=20)
-        self.assertEqual(expand_popup_fields(['-five_hour'], usage), [])
-
-    def test_exclusions_with_empty_null_and_malformed_usage(self):
-        """Exclusions keep the existing filtering of unavailable quota data."""
-        for value in (None, {}, {'utilization': None, 'resets_at': ''}, 'error', [], 42, False):
-            with self.subTest(value=value):
-                usage = {'five_hour': value, 'seven_day': value}
-                self.assertEqual(expand_popup_fields(['*', '-five_hour'], usage), [])
-        self.assertEqual(expand_popup_fields(['*', '-five_hour'], {}), [])
 
     def test_null_fields_skipped(self):
         """Fields with None utilization are skipped."""
@@ -348,34 +440,6 @@ class TestExpandPopupFields(unittest.TestCase):
         result = expand_popup_fields(['*'], usage)
         self.assertEqual(result, [])
 
-    def test_code_named_field_without_reset_window_skipped(self):
-        """A quota the API announces under a code name, before it applies, is not shown."""
-        usage = {
-            'five_hour': {'utilization': 10, 'resets_at': '2026-01-01T00:00:00Z'},
-            'nimbus_quill': {'utilization': 0.0, 'resets_at': None},
-        }
-        for fields in (['*'], ['nimbus_quill']):
-            with self.subTest(popup_fields=fields):
-                self.assertNotIn('nimbus_quill', expand_popup_fields(fields, usage))
-
-    def test_code_named_field_with_reset_window_shown(self):
-        """The same quota appears once the API gives it a reset window."""
-        usage = {'nimbus_quill': {'utilization': 0.0, 'resets_at': '2026-01-01T00:00:00Z'}}
-        result = expand_popup_fields(['*'], usage)
-        self.assertEqual(result, ['nimbus_quill'])
-
-    def test_parsable_field_without_reset_window_shown(self):
-        """A parsable name stays visible without a reset window (inactive model-scoped limit)."""
-        usage = {'seven_day_fable': {'utilization': 0.0, 'resets_at': None}}
-        result = expand_popup_fields(['*'], usage)
-        self.assertEqual(result, ['seven_day_fable'])
-
-    def test_field_just_after_reset_shown(self):
-        """A quota between a reset and its next use (no reset window yet) stays visible on its name."""
-        usage = {'five_hour': {'utilization': 0.0, 'resets_at': None}}
-        result = expand_popup_fields(['*'], usage)
-        self.assertEqual(result, ['five_hour'])
-
     def test_all_fields_null(self):
         """All quota fields null returns empty list."""
         usage = {'five_hour': None, 'seven_day': None, 'seven_day_sonnet': None}
@@ -398,6 +462,90 @@ class TestExpandPopupFields(unittest.TestCase):
         usage = {'five_hour': {'utilization': 0, 'resets_at': ''}}
         result = expand_popup_fields(['*'], usage)
         self.assertEqual(result, ['five_hour'])
+
+
+    def test_exclusion_applies_before_or_after_wildcard(self):
+        """An exclusion hides an active code-named quota wherever it appears."""
+        usage = self._usage(seven_day=20, five_hour=10)
+        usage['iguana_necktie'] = {'utilization': 30, 'resets_at': '2026-01-01T00:00:00Z'}
+        for fields in (['*', '-iguana_necktie'], ['-iguana_necktie', '*']):
+            with self.subTest(popup_fields=fields):
+                self.assertEqual(expand_popup_fields(fields, usage), ['five_hour', 'seven_day'])
+
+
+    def test_exclusion_overrides_explicit_inclusion(self):
+        """Explicitly naming a field cannot restore a globally excluded quota."""
+        usage = self._usage(five_hour=10, seven_day=20)
+        for fields in (
+            ['five_hour', '-five_hour', 'seven_day'],
+            ['-five_hour', 'five_hour', 'seven_day'],
+            ['five_hour', '*', '-five_hour'],
+            ['-five_hour', '*', 'five_hour'],
+        ):
+            with self.subTest(popup_fields=fields):
+                self.assertEqual(expand_popup_fields(fields, usage), ['seven_day'])
+
+
+    def test_exclusion_preserves_explicit_and_wildcard_order(self):
+        """Removing one quota preserves the configured positions of the others."""
+        usage = self._usage(seven_day_sonnet=30, seven_day_opus=40, seven_day=20, five_hour=10)
+        for fields in (
+            ['seven_day_sonnet', '*', '-seven_day'],
+            ['-seven_day', 'seven_day_sonnet', '*'],
+            ['seven_day_sonnet', '-seven_day', '*'],
+        ):
+            with self.subTest(popup_fields=fields):
+                self.assertEqual(expand_popup_fields(fields, usage), ['seven_day_sonnet', 'five_hour', 'seven_day_opus'])
+
+
+    def test_exclusions_match_exact_field_names(self):
+        """Excluding a base quota leaves variants and similarly named quotas visible."""
+        usage = self._usage(five_hour=10, five_hour_sonnet=20, seven_day=30)
+        self.assertEqual(expand_popup_fields(['*', '-five_hour'], usage), ['five_hour_sonnet', 'seven_day'])
+
+
+    def test_multiple_duplicate_and_unknown_exclusions(self):
+        """Repeated or unavailable exclusions do not disturb the remaining quotas."""
+        usage = self._usage(seven_day_sonnet=30, seven_day=20, five_hour=10)
+        fields = ['-five_hour', '*', '-seven_day', '-five_hour', '-unknown_quota']
+        self.assertEqual(expand_popup_fields(fields, usage), ['seven_day_sonnet'])
+
+
+    def test_exclusions_without_inclusions_show_no_fields(self):
+        """An exclusion-only list does not implicitly add a wildcard."""
+        usage = self._usage(five_hour=10, seven_day=20)
+        self.assertEqual(expand_popup_fields(['-five_hour'], usage), [])
+
+
+    def test_exclusions_with_empty_null_and_malformed_usage(self):
+        """Exclusions keep the existing filtering of unavailable quota data."""
+        for value in (None, {}, {'utilization': None, 'resets_at': ''}, 'error', [], 42, False):
+            with self.subTest(value=value):
+                usage = {'five_hour': value, 'seven_day': value}
+                self.assertEqual(expand_popup_fields(['*', '-five_hour'], usage), [])
+        self.assertEqual(expand_popup_fields(['*', '-five_hour'], {}), [])
+
+
+    def test_code_named_field_with_reset_window_shown(self):
+        """The same quota appears once the API gives it a reset window."""
+        usage = {'nimbus_quill': {'utilization': 0.0, 'resets_at': '2026-01-01T00:00:00Z'}}
+        result = expand_popup_fields(['*'], usage)
+        self.assertEqual(result, ['nimbus_quill'])
+
+
+    def test_parsable_field_without_reset_window_shown(self):
+        """A parsable name stays visible without a reset window (inactive model-scoped limit)."""
+        usage = {'seven_day_fable': {'utilization': 0.0, 'resets_at': None}}
+        result = expand_popup_fields(['*'], usage)
+        self.assertEqual(result, ['seven_day_fable'])
+
+
+    def test_field_just_after_reset_shown(self):
+        """A quota between a reset and its next use (no reset window yet) stays visible on its name."""
+        usage = {'five_hour': {'utilization': 0.0, 'resets_at': None}}
+        result = expand_popup_fields(['*'], usage)
+        self.assertEqual(result, ['five_hour'])
+
 
 
 # ---------------------------------------------------------------------------
@@ -589,34 +737,18 @@ class TestDividerPositions(unittest.TestCase):
             self.assertGreater(pos, 0.003)
 
     def _assert_dividers_on_local_midnights(self, reset_iso: str):
-        """Every 7-day divider must land on a real local midnight - also when a
-        DST changeover falls inside the period (the section lengths then differ,
-        but each boundary is still a true midnight)."""
         positions = divider_positions(reset_iso, PERIOD_7D)
         self.assertEqual(len(positions), 7)
-
         start_utc = datetime.fromisoformat(reset_iso) - timedelta(seconds=PERIOD_7D)
         for rel in positions:
             local = (start_utc + timedelta(seconds=round(rel * PERIOD_7D))).astimezone()
-            self.assertEqual(
-                (local.hour, local.minute, local.second), (0, 0, 0),
-                f'divider at {local.isoformat()} is not a local midnight',
-            )
+            self.assertEqual((local.hour, local.minute, local.second), (0, 0, 0))
 
     def test_dividers_stay_on_midnights_across_autumn_dst(self):
-        """A week spanning the late-October changeover (EU zones) keeps every
-        divider on a local midnight instead of drifting by the DST shift."""
-        self._assert_dividers_on_local_midnights('2026-10-28T11:00:00+00:00')
-
-    def test_dividers_stay_on_midnights_across_early_november_dst(self):
-        """A week spanning the early-November changeover (US zones) keeps every
-        divider on a local midnight instead of drifting by the DST shift."""
         self._assert_dividers_on_local_midnights('2026-11-04T11:00:00+00:00')
 
     def test_dividers_stay_on_midnights_across_spring_dst(self):
-        """A week spanning the late-March changeover (EU zones) keeps every
-        divider on a local midnight instead of drifting by the DST shift."""
-        self._assert_dividers_on_local_midnights('2027-03-31T11:00:00+00:00')
+        self._assert_dividers_on_local_midnights('2027-03-17T11:00:00+00:00')
 
     def test_7d_first_position_approximately_correct(self):
         """First midnight in a 7d period starting at noon is at roughly 1/14 of the bar."""
@@ -625,6 +757,13 @@ class TestDividerPositions(unittest.TestCase):
         result = divider_positions(reset_iso, PERIOD_7D)
         self.assertGreater(len(result), 0)
         self.assertAlmostEqual(result[0], 12 / 168, places=2)
+
+
+    def test_dividers_stay_on_midnights_across_early_november_dst(self):
+        """A week spanning the early-November changeover (US zones) keeps every
+        divider on a local midnight instead of drifting by the DST shift."""
+        self._assert_dividers_on_local_midnights('2026-11-04T11:00:00+00:00')
+
 
 
 # ---------------------------------------------------------------------------
@@ -859,12 +998,19 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': 42.0, 'resets_at': ''},
             'seven_day': {'utilization': 15.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 42%\n7d: 15%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 42%\n7d: 15%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    def test_missing_default_field_is_substituted(self, _mock_tu):
+        data = {'seven_day': {'utilization': 29.0, 'resets_at': ''}}
+        result = format_tooltip(data)
+        self.assertIn('7d: 29%', result)
+        self.assertNotIn('5h:', result)
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='Resets in 2h 30m (14:30)')
     def test_with_reset_info(self, _mock_tu):
         data = {'five_hour': {'utilization': 42.0, 'resets_at': '2025-01-15T14:30:00+00:00'}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 42% (Resets in 2h 30m (14:30))')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 42% (Resets in 2h 30m (14:30))')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_utilization_none_skipped(self, _mock_tu):
@@ -872,39 +1018,48 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': None, 'resets_at': ''},
             'seven_day': {'utilization': 80.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 80%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 80%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_empty_data_shows_title_only(self, _mock_tu):
-        self.assertEqual(format_tooltip({}), 'Claude Usage')
+        self.assertEqual(format_tooltip({}), 'Codex Usage')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_zero_percent(self, _mock_tu):
         data = {'five_hour': {'utilization': 0.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 0%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 0%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_hundred_percent(self, _mock_tu):
         data = {'five_hour': {'utilization': 100.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 100%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 100%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_entry_none_skipped(self, _mock_tu):
         """Entry that is None is skipped by the guard clause."""
         data = {'five_hour': None, 'seven_day': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 50%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_entry_empty_dict_skipped(self, _mock_tu):
         """Entry with no utilization key is skipped."""
         data = {'five_hour': {}, 'seven_day': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 50%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 50%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['five_hour', 'limits'])
+    def test_custom_field_pointing_to_non_dict_skipped(self, _mock_tu):
+        data = {
+            'five_hour': {'utilization': 50.0, 'resets_at': ''},
+            'limits': [{'percent': 12, 'group': 'weekly'}],
+        }
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_only_seven_day(self, _mock_tu):
         """Only seven_day present, five_hour absent."""
         data = {'seven_day': {'utilization': 25.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 25%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 25%')
 
     def test_auth_error_false_shows_normal_error(self):
         """auth_error=False with error shows normal error, not auth message."""
@@ -919,7 +1074,7 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': 26.0, 'resets_at': ''},
             'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 420.0},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 26%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 26%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet', 'five_hour'])
@@ -930,39 +1085,56 @@ class TestFormatTooltip(unittest.TestCase):
             'seven_day': {'utilization': 20.0, 'resets_at': ''},
             'seven_day_sonnet': {'utilization': 30.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d Sonnet: 30%\n5h: 10%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d Sonnet: 30%\n5h: 10%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    def test_provider_limit_name_used_for_model_bucket(self, _mock_tu):
+        data = {
+            'seven_day_codex_bengalfox': {
+                'utilization': 3.0,
+                'resets_at': '',
+                'limit_name': 'gpt-5.2-codex-sonic',
+            },
+        }
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d GPT-5.2-Codex-Sonic: 3%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet'])
-    def test_custom_field_null_skipped(self, _mock_tu):
-        """Configured field that is null in API response is skipped."""
+    def test_custom_field_null_is_substituted(self, _mock_tu):
+        """A null configured field is replaced by the next quota field."""
         data = {'seven_day_sonnet': None, 'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['nonexistent_field'])
-    def test_custom_field_missing_from_response_skipped(self, _mock_tu):
-        """Configured field not present in API response is skipped."""
+    def test_custom_field_missing_from_response_is_substituted(self, _mock_tu):
+        """An absent configured field is replaced by the next quota field."""
         data = {'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', [])
     def test_empty_fields_shows_title_only(self, _mock_tu):
         """Empty tooltip_fields shows only the title."""
         data = {'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage')
+
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
-    @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['five_hour', 'limits'])
-    def test_custom_field_pointing_to_non_dict_skipped(self, _mock_tu):
-        """A configured field holding a non-dict response value (e.g. the limits
-        array) is skipped instead of crashing the poll loop."""
-        data = {
-            'five_hour': {'utilization': 50.0, 'resets_at': ''},
-            'limits': [{'percent': 12, 'group': 'weekly'}],
-        }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 50%')
+    @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet'])
+    def test_custom_field_null_uses_available_codex_quota(self, _mock_tu):
+        """Configured field that is null in API response is skipped."""
+        data = {'seven_day_sonnet': None, 'five_hour': {'utilization': 50.0, 'resets_at': ''}}
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
+
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['nonexistent_field'])
+    def test_custom_field_missing_uses_available_codex_quota(self, _mock_tu):
+        """Configured field not present in API response is skipped."""
+        data = {'five_hour': {'utilization': 50.0, 'resets_at': ''}}
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
+
 
 
 # ---------------------------------------------------------------------------
@@ -1018,7 +1190,7 @@ class TestFormatCredits(unittest.TestCase):
     """Tests for format_credits()."""
 
     @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '$')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', None)
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '$')
     @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='$4.20')
     def test_uses_locale_currency(self, mock_currency):
         """Uses locale.currency() for formatting."""
@@ -1033,7 +1205,7 @@ class TestFormatCredits(unittest.TestCase):
         self.assertEqual(format_credits(1000.0), '10,00 $')
 
     @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', None)
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '')
     @patch('usage_monitor_for_claude.formatting._locale.currency', side_effect=ValueError)
     def test_no_symbol_plain_number(self, mock_currency):
         """No currency symbol falls back to plain number."""
@@ -1047,7 +1219,7 @@ class TestFormatCredits(unittest.TestCase):
         self.assertEqual(format_credits(420.0), '¥\u00a04.20')
 
     @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '$')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', None)
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '$')
     @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='$0.00')
     def test_zero_cents(self, mock_currency):
         """Zero cents formats correctly."""
@@ -1067,23 +1239,6 @@ class TestFormatCredits(unittest.TestCase):
         """An explicit currency_symbol override takes precedence over the API currency."""
         self.assertEqual(format_credits(1000.0, 'USD'), '10,00 CHF')
 
-    @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '$')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '$')
-    @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='$10.00')
-    def test_override_equal_to_system_symbol_wins_over_api_currency(self, mock_currency):
-        """An override that happens to equal the system symbol still takes
-        precedence over the API billing currency (e.g. forcing dollars on an
-        en-US system for an account billed in EUR)."""
-        self.assertEqual(format_credits(1000.0, 'EUR'), '$10.00')
-
-    @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '€')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '')
-    @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='10,00 €')
-    def test_empty_override_suppresses_symbol(self, mock_currency):
-        """An empty currency_symbol override means "no symbol" in the locale
-        formatting path too, not only in the fallback path."""
-        self.assertEqual(format_credits(1000.0), '10,00')
-
     @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '')
     @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', None)
     @patch('usage_monitor_for_claude.formatting._locale.currency', side_effect=ValueError)
@@ -1099,12 +1254,35 @@ class TestFormatCredits(unittest.TestCase):
         self.assertEqual(format_credits(500.0, 'XYZ'), 'XYZ 5.00')
 
     @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '$')
-    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', None)
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '$')
     @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='$1.00')
     def test_decimal_places_scales_amount(self, mock_currency):
         """decimal_places controls the minor-unit divisor passed to locale.currency."""
         format_credits(1000.0, 'USD', 3)
         mock_currency.assert_called_once_with(1.0, grouping=True)
+
+
+    @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '$')
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '$')
+    @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='$10.00')
+    def test_override_equal_to_system_symbol_wins_over_api_currency(self, mock_currency):
+        """An override that happens to equal the system symbol still takes
+        precedence over the API billing currency (e.g. forcing dollars on an
+        en-US system for an account billed in EUR)."""
+        self.assertEqual(format_credits(1000.0, 'EUR'), '$10.00')
+
+
+    @patch('usage_monitor_for_claude.formatting._SYSTEM_CURRENCY_SYMBOL', '€')
+    @patch('usage_monitor_for_claude.formatting.CURRENCY_SYMBOL', '')
+    @patch('usage_monitor_for_claude.formatting._locale.currency', return_value='10,00 €')
+    def test_empty_override_suppresses_symbol(self, mock_currency):
+        """An empty currency_symbol override means "no symbol" in the locale
+        formatting path too, not only in the fallback path."""
+        self.assertEqual(format_credits(1000.0), '10,00')
+
+
+
+
 
 
 if __name__ == '__main__':

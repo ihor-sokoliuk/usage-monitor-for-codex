@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.verbose import (
-    _credentials_status,
+    capture_diagnostics,
     _package_version,
     _redact_home,
     _row,
@@ -51,8 +51,8 @@ class TestRedactHome(unittest.TestCase):
         """Paths under the home directory are redacted with ~."""
         home = str(Path.home())
         self.assertEqual(
-            _redact_home(f'{home}{os.sep}.claude{os.sep}.credentials.json'),
-            f'~{os.sep}.claude{os.sep}.credentials.json',
+            _redact_home(f'{home}{os.sep}.codex{os.sep}config.toml'),
+            f'~{os.sep}.codex{os.sep}config.toml',
         )
 
     def test_leaves_other_paths_unchanged(self):
@@ -67,15 +67,15 @@ class TestRedactHome(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'win32', 'path casing only collapses on Windows')
     def test_case_insensitive_match(self):
         """Windows paths are case-insensitive - a differently-cased home prefix
-        (e.g. CLAUDE_CONFIG_DIR set as c:\\users\\...) must still be redacted."""
+        (e.g. CODEX_HOME set as c:\\users\\...) must still be redacted."""
         home = str(Path.home())
-        self.assertEqual(_redact_home(f'{home.swapcase()}{os.sep}.claude{os.sep}file'), f'~{os.sep}.claude{os.sep}file')
+        self.assertEqual(_redact_home(f'{home.swapcase()}{os.sep}.codex{os.sep}file'), f'~{os.sep}.codex{os.sep}file')
 
     @unittest.skipIf(sys.platform == 'win32', 'POSIX paths are case-sensitive')
     def test_case_sensitive_on_posix(self):
         """A differently-cased prefix names a different directory on POSIX."""
         home = str(Path.home())
-        path = f'{home.swapcase()}{os.sep}.claude'
+        path = f'{home.swapcase()}{os.sep}.codex'
         self.assertEqual(_redact_home(path), path)
 
     def test_prefix_boundary_not_partially_redacted(self):
@@ -99,8 +99,8 @@ class TestRedactHome(unittest.TestCase):
             linked_home = _symlinked_home(tmp)
 
             with patch.object(Path, 'home', return_value=linked_home):
-                resolved = str(linked_home.resolve() / '.claude' / '.credentials.json')
-                self.assertEqual(_redact_home(resolved), f'~{os.sep}.claude{os.sep}.credentials.json')
+                resolved = str(linked_home.resolve() / '.codex' / 'config.toml')
+                self.assertEqual(_redact_home(resolved), f'~{os.sep}.codex{os.sep}config.toml')
                 self.assertEqual(_redact_home(str(linked_home / 'venv' / 'python')), f'~{os.sep}venv{os.sep}python')
 
     def test_unresolvable_home_still_redacts(self):
@@ -110,7 +110,7 @@ class TestRedactHome(unittest.TestCase):
         home = str(Path.home())
         for error in (RuntimeError('Symlink loop'), OSError('network path unavailable')):
             with self.subTest(error=type(error).__name__), patch.object(Path, 'resolve', side_effect=error):
-                self.assertEqual(_redact_home(f'{home}{os.sep}.claude'), f'~{os.sep}.claude')
+                self.assertEqual(_redact_home(f'{home}{os.sep}.codex'), f'~{os.sep}.codex')
 
 
 class TestSection(unittest.TestCase):
@@ -174,58 +174,6 @@ class TestPackageVersion(unittest.TestCase):
         self.assertEqual(_package_version('nonexistent-pkg-12345'), 'not found')
 
 
-class TestCredentialsStatus(unittest.TestCase):
-    """Tests for _credentials_status()."""
-
-    def test_found(self):
-        """Reports 'found' with the redacted default path when the file exists."""
-        with TemporaryDirectory() as home_tmp:
-            claude_dir = Path(home_tmp) / '.claude'
-            claude_dir.mkdir()
-            (claude_dir / '.credentials.json').write_text('{}', encoding='utf-8')
-            with patch.object(Path, 'home', return_value=Path(home_tmp)), patch.dict('os.environ', {}, clear=False):
-                os.environ.pop('CLAUDE_CONFIG_DIR', None)
-                result = _credentials_status()
-        self.assertTrue(result.startswith('found'))
-        self.assertIn(f'~{os.sep}.claude{os.sep}.credentials.json', result)
-
-    def test_not_found(self):
-        """Reports 'NOT FOUND' with the redacted default path when the file is missing."""
-        with TemporaryDirectory() as home_tmp:
-            (Path(home_tmp) / '.claude').mkdir()
-            with patch.object(Path, 'home', return_value=Path(home_tmp)), patch.dict('os.environ', {}, clear=False):
-                os.environ.pop('CLAUDE_CONFIG_DIR', None)
-                result = _credentials_status()
-        self.assertTrue(result.startswith('NOT FOUND'))
-        self.assertIn(f'~{os.sep}.claude{os.sep}.credentials.json', result)
-
-    def test_symlinked_home_stays_redacted(self):
-        """The credentials path is resolved before it is printed - with the home
-        directory reached through a symlink the row must still show ~, because
-        this is the dump users paste into public issues."""
-        with TemporaryDirectory() as tmp:
-            linked_home = _symlinked_home(tmp)
-            (linked_home / '.claude').mkdir()
-            (linked_home / '.claude' / '.credentials.json').write_text('{}', encoding='utf-8')
-
-            with patch.object(Path, 'home', return_value=linked_home), patch.dict('os.environ', {}, clear=False):
-                os.environ.pop('CLAUDE_CONFIG_DIR', None)
-                result = _credentials_status()
-
-            self.assertTrue(result.startswith('found'))
-            self.assertIn(f'~{os.sep}.claude{os.sep}.credentials.json', result)
-            self.assertNotIn(str(linked_home.resolve()), result)
-
-    def test_custom_config_dir(self):
-        """Respects CLAUDE_CONFIG_DIR environment variable."""
-        with TemporaryDirectory() as tmp:
-            (Path(tmp) / '.credentials.json').write_text('{}', encoding='utf-8')
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': tmp}):
-                result = _credentials_status()
-        self.assertTrue(result.startswith('found'))
-        self.assertIn(Path(tmp).name, result)
-
-
 class TestPrintStartupDiagnostics(unittest.TestCase):
     """Tests for print_startup_diagnostics() output.
 
@@ -239,7 +187,7 @@ class TestPrintStartupDiagnostics(unittest.TestCase):
              patch('usage_monitor_for_claude.verbose.diagnostic_system_rows', return_value=[('OS', 'TestOS')]), \
              patch('usage_monitor_for_claude.verbose.diagnostic_display_rows', return_value=[('Monitors', '2')]), \
              patch('usage_monitor_for_claude.verbose.diagnostic_runtime_rows', return_value=[('Toolkit', '1.0')]), \
-             patch('usage_monitor_for_claude.verbose.DIAGNOSTIC_PACKAGES', ('requests',)):
+             patch('usage_monitor_for_claude.verbose.DIAGNOSTIC_PACKAGES', ('Pillow',)):
             print_startup_diagnostics()
 
         return buf.getvalue()
@@ -247,7 +195,7 @@ class TestPrintStartupDiagnostics(unittest.TestCase):
     def test_contains_all_sections(self):
         """Every section header is present."""
         output = self._run()
-        for section in ('System', 'Python', 'Locale', 'Display', 'Runtimes', 'Dependencies', 'Credentials'):
+        for section in ('System', 'Python', 'Locale', 'Display', 'Runtimes', 'Dependencies'):
             with self.subTest(section=section):
                 self.assertIn(section, output)
 

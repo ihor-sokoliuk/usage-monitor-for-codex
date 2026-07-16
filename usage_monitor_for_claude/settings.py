@@ -5,12 +5,12 @@ Settings
 Centralizes all user-tunable constants.  Structural constants (API URLs,
 registry keys, file paths) remain in their respective modules.
 
-Loads an optional ``usage-monitor-settings.json`` to let users override
+Loads an optional ``usage-monitor-for-codex-settings.json`` to let users override
 any constant.  Search order:
 
-1. ``$CLAUDE_CONFIG_DIR/usage-monitor-settings.json`` (if set and different from ``~/.claude/``)
+1. ``$CODEX_HOME/usage-monitor-for-codex-settings.json`` (if set and different from ``~/.codex/``)
 2. Next to the executable (frozen) or project root (source)
-3. ``~/.claude/usage-monitor-settings.json``
+3. ``~/.codex/usage-monitor-for-codex-settings.json``
 
 The app never creates this file - users place it manually.
 """
@@ -30,14 +30,17 @@ __all__ = [
     'CLI_COMMAND', 'COMPACT_HIDE', 'CURRENCY_SYMBOL',
     'FG', 'FG_DIM', 'FG_HEADING', 'FG_LINK',
     'ICON_DARK', 'ICON_FIELDS', 'ICON_LIGHT', 'ICON_STYLE', 'IDLE_INTERVAL', 'IDLE_PAUSE',
-    'LANGUAGE', 'MAX_BACKOFF', 'NOTIFY_CLAUDE_UPDATE',
+    'AUTO_UPDATE_CODEX_CLI', 'CODEX_UPDATE_INTERVAL', 'LANGUAGE', 'LOG_BACKUP_COUNT', 'LOG_MAX_BYTES',
+    'MAX_BACKOFF', 'NOTIFY_CODEX_UPDATE', 'ON_DOUBLE_CLICK_COMMAND',
     'ON_RESET_COMMAND', 'ON_STARTUP_COMMAND', 'ON_THRESHOLD_COMMAND', 'QUICK_ACTION_COMMAND',
     'POLL_ERROR', 'POLL_FAST', 'POLL_FAST_EXTRA', 'POLL_INTERVAL',
     'POPUP_FIELDS', 'SETTINGS_FILENAME', 'TIME_FORMAT', 'TOOLTIP_FIELDS',
     'get_alert_thresholds',
 ]
 
-SETTINGS_FILENAME = 'usage-monitor-settings.json'
+SETTINGS_FILENAME = 'usage-monitor-for-codex-settings.json'
+_DEFAULT_POLL_INTERVAL = 180
+_DEFAULT_POLL_FAST = 120
 
 _NUMERIC_BOUNDS: dict[str, int] = {
     'poll_interval': 1,
@@ -47,6 +50,9 @@ _NUMERIC_BOUNDS: dict[str, int] = {
     'max_backoff': 1,
     'idle_pause': 0,
     'idle_interval': 1,
+    'codex_update_interval': 300,
+    'log_max_bytes': 1024,
+    'log_backup_count': 1,
 }
 _COLOR_KEYS = frozenset({'bg', 'fg', 'fg_dim', 'fg_heading', 'fg_link', 'bar_bg', 'bar_fg', 'bar_fg_warn', 'bar_divider', 'bar_marker'})
 _ICON_KEYS = frozenset({'icon_light', 'icon_dark'})
@@ -58,7 +64,7 @@ _VALID_ICON_STYLES = frozenset({'number+bars', 'numbers'})
 _COMMAND_KEYS = frozenset({
     'quick_action_command', 'on_double_click_command', 'on_reset_command', 'on_startup_command', 'on_threshold_command',
 })
-_BOOL_KEYS = frozenset({'alert_time_aware', 'notify_claude_update'})
+_BOOL_KEYS = frozenset({'alert_time_aware', 'auto_update_codex_cli', 'notify_codex_update'})
 _STRING_LIST_KEYS = frozenset({'tooltip_fields', 'compact_hide'})
 _WILDCARD_STRING_LIST_KEYS = frozenset({'popup_fields'})
 _VALID_BAR_MODES = frozenset({'utilization', 'overage'})
@@ -80,13 +86,13 @@ def _quick_action_command(settings: dict) -> list[str]:
 
 
 def _load_settings() -> dict:
-    """Read the first ``usage-monitor-settings.json`` found, or return ``{}``."""
+    """Read the first ``usage-monitor-for-codex-settings.json`` found, or return ``{}``."""
     if getattr(sys, 'frozen', False):
         app_dir = Path(sys.executable).parent
     else:
         app_dir = Path(__file__).resolve().parent.parent
 
-    home_claude = Path.home() / '.claude'
+    home_codex = Path.home() / '.codex'
 
     # A custom config dir takes precedence over the exe-adjacent file so
     # each instance (one per Claude account) can have its own settings.
@@ -94,7 +100,7 @@ def _load_settings() -> dict:
     if not is_default_config_dir():
         search_paths.append(effective_config_dir() / SETTINGS_FILENAME)
     search_paths.append(app_dir / SETTINGS_FILENAME)
-    search_paths.append(home_claude / SETTINGS_FILENAME)
+    search_paths.append(home_codex / SETTINGS_FILENAME)
 
     for path in search_paths:
         if path.is_file():
@@ -111,7 +117,7 @@ def _load_settings() -> dict:
             except (json.JSONDecodeError, ValueError) as exc:
                 show_warning_box(
                     f'Invalid JSON in settings file:\n{path}\n\n{exc}',
-                    'Usage Monitor for Claude - Settings Error',
+                    'Usage Monitor for Codex - Settings Error',
                 )
                 return {}
             except OSError:
@@ -304,13 +310,23 @@ def _validate(data: dict, path: Path) -> dict:
                 if invalid:
                     drop.append(key)
 
+    dropped = set(drop)
+    poll_interval = _DEFAULT_POLL_INTERVAL if 'poll_interval' in dropped else data.get('poll_interval', _DEFAULT_POLL_INTERVAL)
+    poll_fast = _DEFAULT_POLL_FAST if 'poll_fast' in dropped else data.get('poll_fast', _DEFAULT_POLL_FAST)
+    if poll_fast > poll_interval:
+        errors.append('  poll_fast: must be <= poll_interval')
+        for key in ('poll_interval', 'poll_fast'):
+            if key in data and key not in dropped:
+                drop.append(key)
+                dropped.add(key)
+
     for key in drop:
         del data[key]
 
     if errors:
         show_warning_box(
             f'Invalid values in settings file:\n{path}\n\n' + '\n'.join(errors),
-            'Usage Monitor for Claude - Settings Error',
+            'Usage Monitor for Codex - Settings Error',
         )
 
     return data
@@ -325,13 +341,21 @@ def _icon_colors(key: str, defaults: dict[str, tuple]) -> dict[str, tuple]:
 _S = _load_settings()
 
 # Polling intervals (seconds)
-POLL_INTERVAL = _S.get('poll_interval', 180)
-POLL_FAST = _S.get('poll_fast', 120)
+POLL_INTERVAL = _S.get('poll_interval', _DEFAULT_POLL_INTERVAL)
+POLL_FAST = _S.get('poll_fast', _DEFAULT_POLL_FAST)
 POLL_FAST_EXTRA = _S.get('poll_fast_extra', 2)
 POLL_ERROR = _S.get('poll_error', 30)
 MAX_BACKOFF = _S.get('max_backoff', 900)
 IDLE_PAUSE = _S.get('idle_pause', 300)
-IDLE_INTERVAL = _S.get('idle_interval', 900)
+# A scheduled provider operation must observe the Codex child lifetime.
+IDLE_INTERVAL = min(_S.get('idle_interval', 600), 600)
+CODEX_UPDATE_INTERVAL = _S.get('codex_update_interval', 86400)
+AUTO_UPDATE_CODEX_CLI = _S.get('auto_update_codex_cli', True)
+NOTIFY_CODEX_UPDATE = _S.get('notify_codex_update', True)
+
+# Always-on rotating application log
+LOG_MAX_BYTES = _S.get('log_max_bytes', 2 * 1024 * 1024)
+LOG_BACKUP_COUNT = _S.get('log_backup_count', 3)
 
 # Popup theme
 BG = _S.get('bg', '#1e1e1e')
@@ -379,9 +403,6 @@ COMPACT_HIDE: list[str] = _S.get('compact_hide', [])
 ALERT_TIME_AWARE: bool = _S.get('alert_time_aware', True)
 ALERT_TIME_AWARE_BELOW: float = _S.get('alert_time_aware_below', 90)
 
-# Notify when a background token refresh installs a new Claude CLI version
-NOTIFY_CLAUDE_UPDATE: bool = _S.get('notify_claude_update', True)
-
 # Currency
 
 def _detect_currency_symbol() -> str:
@@ -406,16 +427,17 @@ LANGUAGE: str = _S.get('language', '')
 _SYSTEM_TIME_FORMAT = system_time_format()
 TIME_FORMAT: str = _S.get('time_format', _SYSTEM_TIME_FORMAT)
 
-# Extra Claude CLI command(s) to report a version for - name -> base command
+# Extra Codex CLI command(s) to report a version for - name -> base command
 # (e.g. run the version check inside WSL).  Display only: these are listed in
 # addition to the auto-detected native binary and the IDE extensions, and never
-# take part in authentication (see claude_cli.py).
+# take part in authentication (see codex_cli.py).
 CLI_COMMAND: dict[str, list[str]] = _S.get('cli_command', {})
 
 # Event commands.  The quick action is the one a user triggers directly - by
 # double-clicking the tray icon where the system reports that, and from the
 # tray menu everywhere else.
 QUICK_ACTION_COMMAND: list[str] = _quick_action_command(_S)
+ON_DOUBLE_CLICK_COMMAND = QUICK_ACTION_COMMAND
 ON_RESET_COMMAND: list[str] = _S.get('on_reset_command', [])
 ON_STARTUP_COMMAND: list[str] = _S.get('on_startup_command', [])
 ON_THRESHOLD_COMMAND: list[str] = _S.get('on_threshold_command', [])

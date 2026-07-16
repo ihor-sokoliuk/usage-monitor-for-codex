@@ -1,268 +1,130 @@
-# Event Commands
+# Event commands
 
-Run a custom shell command when a quota resets, a usage threshold is crossed, the app starts, or you trigger your quick action from the tray icon. Commands run asynchronously and do not block the app. Event details are passed as environment variables so your command or script can use them directly.
+Event commands run user-selected shell commands when usage events occur. Add them to [`usage-monitor-for-codex-settings.json`](configuration.md), then use **Restart** from the tray menu.
 
-The examples on this page use Windows PowerShell. They work the same way on Linux with the shell of your choice - only the commands themselves differ (`paplay` or `notify-send` instead of `Media.SoundPlayer`).
+| Setting | Trigger |
+|---|---|
+| `on_reset_command` | A usage window resets after previously being near exhaustion |
+| `on_threshold_command` | A usage field crosses a configured threshold |
+| `on_startup_command` | The first successful provider update after app start or Restart |
+| `quick_action_command` | Tray double-click on Windows, or **Run Quick Action** in the menu |
+| `on_double_click_command` | Compatibility alias for `quick_action_command`; the new key takes precedence |
 
-How you trigger the quick action depends on the system. On Windows it is a double-click on the tray icon. On Linux the desktop panel does not report a double-click to the app, so the tray menu carries a **Run Quick Action** entry instead. Both run the same command with the same environment variables.
-
-## Settings
-
-Add these keys to your [`usage-monitor-settings.json`](configuration.md). After saving, use the **Restart** option in the tray context menu to apply the changes.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `on_reset_command` | *(none)* | Shell command (or array of commands) to run when a quota resets (usage drops) |
-| `on_startup_command` | *(none)* | Shell command (or array of commands) to run once after the first successful API update following app start |
-| `on_threshold_command` | *(none)* | Shell command (or array of commands) to run when usage crosses a configured alert threshold |
-| `quick_action_command` | *(none)* | Shell command (or array of commands) to run when you trigger the quick action |
-
-Commands run with the same privileges as the app and **without a visible window** - no console pops up and no focus is stolen. This is ideal for background tasks like sending notifications, playing sounds, or running headless commands (e.g. `claude -p "..."`). Relative paths in commands are resolved relative to the executable's folder (or the project root when running from source).
-
-Each of these settings accepts a single command string or an array of strings to run multiple commands per event. When an array is provided, all commands are launched independently (fire-and-forget) - if one fails, the others still run.
-
-Commands only fire on **state changes** detected while the app is running. On app startup, already-exceeded thresholds trigger a desktop notification but do not run `on_threshold_command` - this prevents duplicate commands after a restart or reboot.
-
-`quick_action_command` is the exception: it reacts to you, not to a usage event. On Windows a single click still opens the detail popup and only a double-click runs the command; while a quick action is configured, the popup opens after the system double-click interval (about half a second) so a second click can be recognized - without it, the popup opens instantly.
-
-> [!NOTE]
-> This setting was called `on_double_click_command` in earlier versions. That name still works, so existing settings files need no change. When both are present, `quick_action_command` decides.
-
-Because the quick action is user-driven, a command that fails to start - it exits with a non-zero (error) code within the first few seconds - shows its stderr in an error dialog, so a wrong path or a broken command is not swallowed silently. If the command starts an app, that app's later exit code is ignored. The automatic reset, threshold, and startup commands stay silent - they fire in the background and must not interrupt you with dialogs.
-
-On an idle or locked computer the app keeps polling on a slower cadence, and still checks at the expected reset time, so `on_reset_command` fires promptly and retries until the API confirms the reset. `on_threshold_command` follows that same slower cadence while you are away. Notifications raised while you were away are shown when you return.
-
-> [!TIP]
-> If you need a visible terminal, prefix your command with `start cmd /c`, e.g.:
-> ```
-> "on_reset_command": "start cmd /c claude --continue"
-> ```
-
-> [!TIP]
-> Use the **Test event commands** submenu in the tray context menu to fire your configured commands with sample data, without waiting for a real event. Commands fired this way print their exit code, stdout, and stderr - visible when you run the app from source (`python -m usage_monitor_for_claude`) or in the console `--verbose` attaches to the packaged EXE - and any non-zero exit code shows the stderr in an error dialog, however long the command ran. Event commands otherwise discard all output.
-
-## Examples
-
-### Launch Agent Monitor for Claude as your quick action
-
-[**Agent Monitor for Claude**](https://github.com/jens-duttke/agent-monitor-for-claude) shows what your Claude Code agents are doing right now - which ones are working, waiting for input, or finished - grouped by project. Like this app it is a single portable EXE that needs no configuration, which makes it a practical quick action.
-
-**Setup:**
-
-1. Download `AgentMonitorForClaude.exe` from the [latest release](https://github.com/jens-duttke/agent-monitor-for-claude/releases/latest).
-2. Place it in the **same folder** as `UsageMonitorForClaude.exe`. Relative paths in event commands resolve against that folder, so no full path is needed.
-3. Add the setting and restart Usage Monitor for Claude via the tray context menu:
+A value can be one command or an ordered array. Use an empty string or empty
+array to disable an event command; array entries must be non-empty strings.
 
 ```json
 {
-  "quick_action_command": "AgentMonitorForClaude.exe"
-}
-```
-
-Now a single click still opens the usage popup, and your quick action opens Agent Monitor for Claude.
-
-> [!TIP]
-> If you keep the EXE somewhere else, use its full path instead, e.g. `"quick_action_command": "C:\\Tools\\AgentMonitorForClaude.exe"`.
-
-### Resume a Claude Code session when the quota resets
-
-```json
-{
-  "on_reset_command": "claude --continue -p \"Quota is available, resume task\""
-}
-```
-
-`--continue` resumes the most recent conversation. Use `--resume <name>` to target a specific named session.
-
-### Start a new 5-hour session at app start when none is active
-
-Start the 5-hour session immediately at app launch instead of waiting for your first real message. Only fires when no 5-hour session is currently active:
-
-```json
-{
-  "on_startup_command": "if not defined USAGE_MONITOR_RESETS_AT_FIVE_HOUR claude -p \"ok\" --tools \"\" --no-session-persistence --system-prompt \"Reply with only: ok\" --output-format text"
-}
-```
-
-`USAGE_MONITOR_RESETS_AT_FIVE_HOUR` is empty when no five-hour session is active, so the ping only fires after a reset already happened (e.g. overnight, or while the app was closed).
-
-### Always keep a 5-hour session running
-
-To cover both cases - the reset happening with the app running, **and** the app starting up after a reset already happened - configure both commands together:
-
-```json
-{
-  "on_startup_command": "if not defined USAGE_MONITOR_RESETS_AT_FIVE_HOUR claude -p \"ok\" --tools \"\" --no-session-persistence --system-prompt \"Reply with only: ok\" --output-format text",
-  "on_reset_command": "if \"%USAGE_MONITOR_VARIANT%\"==\"five_hour\" claude -p \"ok\" --tools \"\" --no-session-persistence --system-prompt \"Reply with only: ok\" --output-format text"
-}
-```
-
-`on_reset_command` handles the live case (5-hour session expires while the app is polling), `on_startup_command` handles the gap (app was closed when the reset happened, or you just turned the computer back on).
-
-### Target a specific quota variant
-
-Use `USAGE_MONITOR_VARIANT` to run a command only when a specific quota resets:
-
-```json
-{
-  "on_reset_command": "if \"%USAGE_MONITOR_VARIANT%\"==\"five_hour\" claude -p \"ok\" --tools \"\" --no-session-persistence --system-prompt \"Reply with only: ok\" --output-format text"
-}
-```
-
-The same pattern works for any variant (`seven_day`, `seven_day_sonnet`, etc.) and for `on_threshold_command`.
-
-### Only resume when both quotas have enough headroom
-
-```json
-{
-  "on_reset_command": "if %USAGE_MONITOR_UTILIZATION_FIVE_HOUR% LSS 80 if %USAGE_MONITOR_UTILIZATION_SEVEN_DAY% LSS 95 claude --continue -p \"Quota is available, resume task\""
-}
-```
-
-### Play a sound and send a push notification when the quota resets
-
-```json
-{
+  "quick_action_command": "notepad.exe",
   "on_reset_command": [
-    "powershell -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\notify.wav').PlaySync()\"",
-    "curl -s -d \"token=<APP_TOKEN>&user=<USER_KEY>&title=%USAGE_MONITOR_TITLE%&message=%USAGE_MONITOR_MESSAGE%\" https://api.pushover.net/1/messages.json"
+    "powershell -NoProfile -ExecutionPolicy Bypass -File .\\on-reset.ps1",
+    "mplay32 /play /close C:\\Windows\\Media\\notify.wav"
   ]
 }
 ```
 
-### Send a Telegram message when a threshold is crossed
+Relative paths resolve from the EXE directory, or from the repository root when running from source.
+
+## Security and network boundary
+
+Commands run with the same user privileges as the monitor. They are deliberately capable of launching programs, reading or writing files, and using the network. Review every command and script before configuring it; never put secrets directly in the JSON settings file.
+
+Automatic event commands are fire-and-forget with output discarded and no visible console window. Commands launched from the **Test event commands** menu or by the quick action are user-driven: their output is captured, and a nonzero exit displays an error dialog.
+
+The monitor's built-in provider path makes no outbound API request. Any network call made by an event command belongs to that user-configured command. For example, this threshold command intentionally sends a request to a third-party service:
 
 ```json
 {
-  "on_threshold_command": "curl -s -X POST \"https://api.telegram.org/bot<TOKEN>/sendMessage\" -d chat_id=<ID> -d text=%USAGE_MONITOR_MESSAGE%"
+  "on_threshold_command": "curl -s -d \"token=<APP_TOKEN>&user=<USER_KEY>&title=%USAGE_MONITOR_TITLE%&message=%USAGE_MONITOR_MESSAGE%\" https://api.pushover.net/1/messages.json"
 }
 ```
 
-### Play a sound when a threshold is crossed
+## Idle behavior
 
-```json
-{
-  "on_threshold_command": "powershell -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\notify.wav').PlaySync()\""
-}
+Away or locked sessions continue polling on `idle_interval` (600 seconds by default and at most), with normal reset alignment, fetch cooldown, and error cadence. An uncovered visible popup keeps normal cadence. `on_reset_command` can bring reset confirmation forward; commands themselves are not deferred. Desktop notifications are deferred while away, locked, or when lock state cannot be established, and released when the user returns.
+
+## Test commands
+
+Use **Test event commands** from the tray context menu to run configured commands with sample data. When running from source, or when the packaged EXE is attached to a console with `--verbose`, captured stdout/stderr is also printed.
+
+Testing an event command can perform its real side effects. A push command can send a real message, and a script can modify real files.
+
+## Environment variables
+
+Every command inherits the monitor's environment and receives:
+
+| Variable | Meaning |
+|---|---|
+| `USAGE_MONITOR_VERSION` | Monitor version |
+| `USAGE_MONITOR_EVENT` | `reset`, `threshold`, `startup`, or `quick_action` |
+
+Migration note: normal quick actions now emit `quick_action`, including Windows double-click and Linux menu invocation. Older scripts matching `double_click` must accept `quick_action` after upgrading. The old settings key is still recognized, but it does not preserve the old event value.
+
+### Reset event
+
+| Variable | Meaning |
+|---|---|
+| `USAGE_MONITOR_VARIANT` | Normalized field that reset, such as `five_hour`, `seven_day`, or `seven_day_gpt_5_pro` |
+| `USAGE_MONITOR_UTILIZATION` | Current rounded utilization |
+| `USAGE_MONITOR_PREV_UTILIZATION` | Previous rounded utilization |
+| `USAGE_MONITOR_RESETS_AT` | Current reset timestamp, or empty when unavailable |
+| `USAGE_MONITOR_TITLE` | Localized notification title |
+| `USAGE_MONITOR_MESSAGE` | Localized notification body |
+| `USAGE_MONITOR_UTILIZATION_FIVE_HOUR` | Compatibility value for `five_hour`; `0` when absent |
+| `USAGE_MONITOR_UTILIZATION_SEVEN_DAY` | Compatibility value for `seven_day`; `0` when absent |
+
+### Threshold event
+
+| Variable | Meaning |
+|---|---|
+| `USAGE_MONITOR_VARIANT` | Normalized field that crossed the threshold |
+| `USAGE_MONITOR_UTILIZATION` | Current rounded utilization |
+| `USAGE_MONITOR_THRESHOLD` | Threshold crossed |
+| `USAGE_MONITOR_RESETS_AT` | Reset timestamp, or empty when unavailable |
+| `USAGE_MONITOR_TITLE` | Localized notification title |
+| `USAGE_MONITOR_MESSAGE` | Localized notification body |
+
+### Startup and quick-action snapshots
+
+For every detected usage field, the monitor emits:
+
+```text
+USAGE_MONITOR_UTILIZATION_<FIELD>
+USAGE_MONITOR_RESETS_AT_<FIELD>
 ```
 
-Any `.wav` file works - Windows ships with several sounds in `C:\Windows\Media\`. For `.mp3` files:
+The field name is uppercased. For example, `seven_day_gpt_5_pro` becomes `USAGE_MONITOR_UTILIZATION_SEVEN_DAY_GPT_5_PRO`. A missing reset timestamp is an empty string. Duration-less windows still emit variables even though their UI has no time marker.
 
-```json
-{
-  "on_threshold_command": "powershell -Command \"Add-Type -AssemblyName presentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([uri]'C:\\alert.mp3'); $p.Play(); Start-Sleep 3\""
-}
-```
+The fixed five-hour and seven-day compatibility pairs are always available to reset handling and report `0`/empty values when those windows do not exist. Codex v1 does not emit the retained upstream `USAGE_MONITOR_EXTRA_*` variables because credits metadata is intentionally dropped.
 
-### Use a script file for complex logic
+If the quick action runs before the first successful provider update, only the general event/version values are available.
 
-Different actions depending on quota type and threshold:
+## PowerShell example
 
-```json
-{
-  "alert_thresholds_five_hour": [80, 95],
-  "alert_thresholds_seven_day": [95],
-  "on_threshold_command": "powershell -ExecutionPolicy Bypass -File .\\notify.ps1"
-}
-```
+Save this as `on-threshold.ps1` next to the EXE:
 
 ```powershell
-# notify.ps1 - different actions depending on quota type and threshold
-$variant = $env:USAGE_MONITOR_VARIANT
-$threshold = [int]$env:USAGE_MONITOR_THRESHOLD
+$message = "[$env:USAGE_MONITOR_VARIANT] $env:USAGE_MONITOR_UTILIZATION% used"
+Add-Type -AssemblyName PresentationFramework
+[System.Windows.MessageBox]::Show($message, $env:USAGE_MONITOR_TITLE) | Out-Null
+```
 
-# Session quota: play a warning sound at 80%, a critical sound at 95%
-if ($variant -eq "five_hour") {
-    if ($threshold -ge 95) {
-        (New-Object Media.SoundPlayer 'C:\Windows\Media\Windows Critical Stop.wav').PlaySync()
-    } elseif ($threshold -ge 80) {
-        (New-Object Media.SoundPlayer 'C:\Windows\Media\Windows Notify.wav').PlaySync()
-    }
-}
+Configure it:
 
-# Weekly quota: send a Pushover notification at 95%
-if ($variant -eq "seven_day" -and $threshold -ge 95) {
-    $body = @{ token = "<APP_TOKEN>"; user = "<USER_KEY>"; title = $env:USAGE_MONITOR_TITLE; message = $env:USAGE_MONITOR_MESSAGE }
-    Invoke-WebRequest -Uri "https://api.pushover.net/1/messages.json" -Method POST -Body $body | Out-Null
+```json
+{
+  "on_threshold_command": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\on-threshold.ps1"
 }
 ```
 
-## Environment Variables
+## Linux example
 
-Commands receive event details as environment variables. Access them with `%VAR%` in cmd.exe or `$env:VAR` in PowerShell.
+Linux commands run through the user's shell with the same environment variables. Save a script and configure its absolute path, or use a short command:
 
-### Common
+```json
+{
+  "quick_action_command": "xdg-open https://github.com/ihor-sokoliuk/usage-monitor-for-codex"
+}
+```
 
-Available in all event commands:
-
-| Variable | Example | Description |
-|---|---|---|
-| `USAGE_MONITOR_VERSION` | `1.13.0` | Running app version |
-
-### `on_reset_command`
-
-Fires whenever usage drops (not only when nearly exhausted).
-
-| Variable | Example | Description |
-|---|---|---|
-| `USAGE_MONITOR_EVENT` | `reset` | Event type |
-| `USAGE_MONITOR_VARIANT` | `five_hour` or `seven_day` | Which quota reset |
-| `USAGE_MONITOR_UTILIZATION` | `5` | Current usage of the reset quota (integer) |
-| `USAGE_MONITOR_PREV_UTILIZATION` | `98` | Usage before the reset (integer) |
-| `USAGE_MONITOR_UTILIZATION_FIVE_HOUR` | `5` | Current session (5h) usage (integer) |
-| `USAGE_MONITOR_UTILIZATION_SEVEN_DAY` | `42` | Current weekly (7d) usage (integer) |
-| `USAGE_MONITOR_RESETS_AT` | `2025-01-15T18:00:00Z` | When the quota resets next (ISO 8601, UTC), or empty if no new window has started yet |
-| `USAGE_MONITOR_TITLE` | `Quota Reset` | Notification title (localized) |
-| `USAGE_MONITOR_MESSAGE` | `Your quota has been reset...` | Notification message (localized) |
-
-Both quota values are included so your script can check whether you are actually unblocked - the session quota may reset while the weekly quota is still at the limit. `USAGE_MONITOR_PREV_UTILIZATION` lets you act only on significant resets.
-
-### `on_threshold_command`
-
-Fires when usage crosses a configured alert threshold.
-
-| Variable | Example | Description |
-|---|---|---|
-| `USAGE_MONITOR_EVENT` | `threshold` | Event type |
-| `USAGE_MONITOR_VARIANT` | `five_hour`, `seven_day`, `seven_day_sonnet`, `seven_day_opus`, `extra_usage` | Which quota is affected |
-| `USAGE_MONITOR_UTILIZATION` | `84` | Current usage percentage (integer) |
-| `USAGE_MONITOR_THRESHOLD` | `80` | Threshold that was crossed (integer) |
-| `USAGE_MONITOR_RESETS_AT` | `2025-01-15T18:00:00Z` | When the quota resets (ISO 8601, UTC) |
-| `USAGE_MONITOR_TITLE` | `Usage Alert` | Notification title (localized) |
-| `USAGE_MONITOR_MESSAGE` | `Your session usage has reached 84%` | Notification message (localized) |
-| `USAGE_MONITOR_EXTRA_USED` | `$8.20` | Amount spent (extra usage only) |
-| `USAGE_MONITOR_EXTRA_LIMIT` | `$10.00` | Monthly limit (extra usage only) |
-
-`USAGE_MONITOR_EXTRA_USED` and `USAGE_MONITOR_EXTRA_LIMIT` are only set when `USAGE_MONITOR_VARIANT` is `extra_usage`.
-
-### `on_startup_command`
-
-Fires once after the first successful API update following app start (also after using the **Restart** menu option). Receives the full quota state so the command can decide what to do based on which sessions are active. Skipped when the first call fails (auth error, offline) - retries on the next successful poll.
-
-| Variable | Example | Description |
-|---|---|---|
-| `USAGE_MONITOR_EVENT` | `startup` | Event type |
-| `USAGE_MONITOR_UTILIZATION_FIVE_HOUR` | `0` | Current session (5h) usage (integer) |
-| `USAGE_MONITOR_RESETS_AT_FIVE_HOUR` | `2025-01-15T18:00:00Z` | When the 5h session resets, or empty if no session is active |
-| `USAGE_MONITOR_UTILIZATION_SEVEN_DAY` | `42` | Current weekly (7d) usage (integer) |
-| `USAGE_MONITOR_RESETS_AT_SEVEN_DAY` | `2025-01-20T12:00:00Z` | When the 7d window resets, or empty if no window is active |
-| `USAGE_MONITOR_EXTRA_USED` | `$8.20` | Amount spent (only set when extra usage is enabled) |
-| `USAGE_MONITOR_EXTRA_LIMIT` | `$10.00` | Monthly limit (only set when extra usage is enabled) |
-
-Per-quota variables are emitted for every quota that applies to your account - additional variants like `USAGE_MONITOR_UTILIZATION_SEVEN_DAY_SONNET` follow the same pattern. A quota type the API lists but has not activated for your account gets no variables at all, so check that a variable is set before relying on it. An empty `USAGE_MONITOR_RESETS_AT_*` indicates that the quota has no active window (either never used, or the previous window has expired).
-
-### `quick_action_command`
-
-Fires when you trigger the quick action. Receives the same full quota state as `on_startup_command`, taken from the most recent successful update.
-
-| Variable | Example | Description |
-|---|---|---|
-| `USAGE_MONITOR_EVENT` | `quick_action` | Event type |
-| `USAGE_MONITOR_UTILIZATION_FIVE_HOUR` | `0` | Current session (5h) usage (integer) |
-| `USAGE_MONITOR_RESETS_AT_FIVE_HOUR` | `2025-01-15T18:00:00Z` | When the 5h session resets, or empty if no session is active |
-| `USAGE_MONITOR_UTILIZATION_SEVEN_DAY` | `42` | Current weekly (7d) usage (integer) |
-| `USAGE_MONITOR_RESETS_AT_SEVEN_DAY` | `2025-01-20T12:00:00Z` | When the 7d window resets, or empty if no window is active |
-| `USAGE_MONITOR_EXTRA_USED` | `$8.20` | Amount spent (only set when extra usage is enabled) |
-| `USAGE_MONITOR_EXTRA_LIMIT` | `$10.00` | Monthly limit (only set when extra usage is enabled) |
-
-Per-quota variables are emitted for every quota that applies to your account, following the same pattern as `on_startup_command`. If you trigger it before the first successful update, only `USAGE_MONITOR_EVENT` is set.
+Use shell syntax appropriate to the platform: Windows uses `%USAGE_MONITOR_VARIANT%` in a command string and `$env:USAGE_MONITOR_VARIANT` in PowerShell; Linux shells use `$USAGE_MONITOR_VARIANT`. Windows-only examples above require Windows tools.
