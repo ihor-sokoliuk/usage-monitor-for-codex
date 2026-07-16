@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .settings import ICON_DARK, ICON_LIGHT
 
-__all__ = ['load_font', 'taskbar_uses_light_theme', 'watch_theme_change', 'create_icon_image', 'create_status_image']
+__all__ = ['ZERO_STATE_GLYPH', 'load_font', 'taskbar_uses_light_theme', 'watch_theme_change', 'create_icon_image', 'create_status_image']
 
 # Theme registry
 THEME_REG_KEY = r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
@@ -30,6 +30,9 @@ ICON_SIZE = 64
 BAR_HEIGHT = 9
 BAR_GAP = 3
 MARKER_WIDTH = 4
+
+# Codex prompt motif, distinct from the Claude monitor's zero-state glyph.
+ZERO_STATE_GLYPH = '>_'
 
 
 @functools.lru_cache(maxsize=None)
@@ -80,9 +83,9 @@ def create_icon_image(
     pct_top: float, pct_bottom: float, light_taskbar: bool = False,
     *, mode_top: str = 'utilization', mode_bottom: str = 'utilization',
     time_pct_top: float | None = None, time_pct_bottom: float | None = None,
-    extra_usage_available: bool = False,
+    extra_usage_available: bool = False, bar_count: int = 2,
 ) -> Image.Image:
-    """Create tray icon: 'C' letter + two usage bars.
+    """Create tray icon: Codex prompt motif or percentage plus available usage bars.
 
     Parameters
     ----------
@@ -107,6 +110,9 @@ def create_icon_image(
         True if the account has paid extra-usage credits still available.
         When a quota is fully exhausted, this decides whether to show ``$``
         (continuing costs money) or ``✕`` (fully blocked).
+    bar_count : int
+        Number of detected quota bars to draw, from zero to two. A single
+        bar is centered in the normal two-bar area.
     """
     colors = ICON_DARK if light_taskbar else ICON_LIGHT
     fg, fg_half, fg_warn = colors['fg'], colors['fg_half'], colors['fg_warn']
@@ -117,9 +123,10 @@ def create_icon_image(
 
     # Top glyph: "✕" when any quota exhausted and no extra credits left,
     # "$" when exhausted but paid extra-usage still available,
-    # "C" while usage is still zero, otherwise the percentage.
+    # Codex prompt motif while usage is still zero, otherwise the percentage.
     stroke_width = 0
-    any_exhausted = pct_top >= 100 or pct_bottom >= 100
+    bar_count = max(0, min(2, bar_count))
+    any_exhausted = pct_top >= 100 or (bar_count == 2 and pct_bottom >= 100)
     if any_exhausted and not extra_usage_available:
         text, font = '\u2715', load_font(36, symbol=True)
         stroke_width = 2
@@ -129,18 +136,23 @@ def create_icon_image(
     elif pct_top > 0:
         text, font = f'{pct_top:.0f}', load_font(40)
     else:
-        text, font = 'C', load_font(42)
+        text, font = ZERO_STATE_GLYPH, load_font(36)
 
     bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
     tw = bbox[2] - bbox[0]
     draw.text(((S - tw) / 2 - bbox[0], -bbox[1]), text, fill=fg, font=font, stroke_width=stroke_width, stroke_fill=fg)
 
-    # Progress bars - full width, flush to bottom
+    # Progress bars - full width in the lower icon area. A lone quota is
+    # centered where the two-bar group normally sits, without a ghost line.
     bar2_y = S - BAR_HEIGHT
     bar1_y = bar2_y - BAR_GAP - BAR_HEIGHT
 
-    _draw_usage_bar(draw, bar1_y, pct_top, mode_top, time_pct_top, fg, fg_half, fg_warn)
-    _draw_usage_bar(draw, bar2_y, pct_bottom, mode_bottom, time_pct_bottom, fg, fg_half, fg_warn)
+    if bar_count == 1:
+        single_y = S - BAR_HEIGHT - (BAR_HEIGHT + BAR_GAP) // 2
+        _draw_usage_bar(draw, single_y, pct_top, mode_top, time_pct_top, fg, fg_half, fg_warn)
+    elif bar_count == 2:
+        _draw_usage_bar(draw, bar1_y, pct_top, mode_top, time_pct_top, fg, fg_half, fg_warn)
+        _draw_usage_bar(draw, bar2_y, pct_bottom, mode_bottom, time_pct_bottom, fg, fg_half, fg_warn)
 
     return img
 

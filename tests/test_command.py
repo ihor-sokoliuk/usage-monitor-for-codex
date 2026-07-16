@@ -224,8 +224,10 @@ class TestRunEventCommandCaptureOutput(unittest.TestCase):
 
         mock_ctypes.windll.user32.MessageBoxW.assert_called_once()
         box_message = mock_ctypes.windll.user32.MessageBoxW.call_args[0][1]
+        box_title = mock_ctypes.windll.user32.MessageBoxW.call_args[0][2]
         self.assertIn('the failure detail', box_message)
         self.assertIn('2', box_message)
+        self.assertEqual(box_title, 'Usage Monitor for Codex - Event Command Failed')
 
     @patch('usage_monitor_for_claude.command.ctypes')
     @patch('builtins.print')

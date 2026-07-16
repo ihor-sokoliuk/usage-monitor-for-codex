@@ -3,8 +3,8 @@ Autostart
 ==========
 
 Manages Windows autostart via the ``HKCU\\...\\Run`` registry key.
-Each monitor instance (one per Claude config directory) uses its own
-registry value name and stores its ``--config-dir`` in the command.
+Each monitor instance (one per Codex home) uses its own registry value
+name and stores its ``--codex-home`` in the command.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .instance_id import config_dir_suffix, effective_config_dir, is_default_con
 __all__ = ['AUTOSTART_REG_KEY', 'AUTOSTART_REG_BASE_NAME', 'is_autostart_enabled', 'set_autostart', 'sync_autostart_path']
 
 AUTOSTART_REG_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
-AUTOSTART_REG_BASE_NAME = 'UsageMonitorForClaude'
+AUTOSTART_REG_BASE_NAME = 'UsageMonitorForCodex'
 
 
 def _autostart_reg_name() -> str:
@@ -28,7 +28,7 @@ def _autostart_command() -> str:
     """Return the command line to store in the registry for this instance."""
     command = f'"{sys.executable}"'
     if not is_default_config_dir():
-        command += f' --config-dir="{effective_config_dir()}"'
+        command += f' --codex-home="{effective_config_dir()}"'
     return command
 
 

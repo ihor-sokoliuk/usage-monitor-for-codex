@@ -20,8 +20,8 @@ from .instance_id import config_dir_suffix
 
 __all__ = ['ensure_single_instance', 'release_instance_lock']
 
-_MUTEX_BASE_NAME = 'UsageMonitorForClaude_SingleInstance'
-_PID_MAPPING_BASE_NAME = 'UsageMonitorForClaude_HolderPID'
+_MUTEX_BASE_NAME = 'UsageMonitorForCodex_SingleInstance'
+_PID_MAPPING_BASE_NAME = 'UsageMonitorForCodex_HolderPID'
 _ERROR_ALREADY_EXISTS = 0xB7
 _INVALID_HANDLE = ctypes.c_void_p(-1).value
 _PAGE_READWRITE = 0x04
@@ -78,8 +78,8 @@ _pid_mapping_handle: int | None = None
 def _object_names() -> tuple[str, str]:
     """Return the per-instance ``(mutex_name, pid_mapping_name)`` pair.
 
-    The names carry a config-dir suffix so one monitor instance per
-    Claude account can run concurrently, each a singleton for its own
+    The names carry a Codex-home suffix so one monitor instance per
+    Codex account can run concurrently, each a singleton for its own
     config directory.
     """
     suffix = config_dir_suffix()
@@ -210,6 +210,16 @@ def ensure_single_instance() -> bool:
     _kernel32.CloseHandle(_mutex_handle)
 
     _mutex_handle = _kernel32.CreateMutexW(None, False, mutex_name)
+    replacement_error = ctypes.get_last_error()
+    if not _mutex_handle or replacement_error == _ERROR_ALREADY_EXISTS:
+        if _mutex_handle:
+            _kernel32.CloseHandle(_mutex_handle)
+        _mutex_handle = None
+        ctypes.windll.user32.MessageBoxW(
+            None, message, title,
+            0x10 | MB_TOPMOST,
+        )
+        return False
     _store_holder_info()
     return True
 

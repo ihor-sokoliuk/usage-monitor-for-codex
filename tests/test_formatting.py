@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.formatting import (
     PERIOD_5H, PERIOD_7D,
-    divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits,
-    format_tooltip, parse_field_name, popup_label, time_until, tooltip_label,
+    _field_sort_key, divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits,
+    format_tooltip, parse_field_name, popup_label, resolve_display_fields, time_until, tooltip_label,
 )
 from usage_monitor_for_claude.i18n import LOCALE_DIR
 
@@ -186,6 +186,131 @@ class TestFieldPeriod(unittest.TestCase):
 
     def test_unknown_unit_returns_none(self):
         self.assertIsNone(field_period('one_year'))
+
+
+@patch('usage_monitor_for_claude.formatting.T', EN)
+class TestExtendedFieldNames(unittest.TestCase):
+    """Digit prefixes and the minute unit (Codex window durations)."""
+
+    def test_parse_digit_day(self):
+        self.assertEqual(parse_field_name('30_day'), (30, 'day', None))
+
+    def test_parse_digit_hour(self):
+        self.assertEqual(parse_field_name('13_hour'), (13, 'hour', None))
+
+    def test_parse_minute_unit(self):
+        self.assertEqual(parse_field_name('90_minute'), (90, 'minute', None))
+
+    def test_parse_digit_with_variant(self):
+        self.assertEqual(parse_field_name('30_day_gpt_5_pro'), (30, 'day', 'gpt_5_pro'))
+
+    def test_parse_rejects_unknown_unit(self):
+        self.assertIsNone(parse_field_name('90_fortnight'))
+
+    def test_field_period_minute(self):
+        self.assertEqual(field_period('90_minute'), 90 * 60)
+
+    def test_label_matrix(self):
+        cases = [
+            ('90_minute', '90m', 'Session (90min)'),
+            ('five_hour', '5h', 'Session (5hr)'),
+            ('13_hour', '13h', 'Session (13hr)'),
+            ('seven_day', '7d', 'Weekly (7 day)'),
+            ('30_day', '30d', 'Weekly (30 day)'),
+            ('seven_day_gpt_5_pro', '7d GPT 5 Pro', 'Weekly (GPT 5 Pro)'),
+        ]
+        for field, tooltip, popup in cases:
+            with self.subTest(field=field):
+                self.assertEqual(tooltip_label(field), tooltip)
+                self.assertEqual(popup_label(field), popup)
+
+    def test_sort_by_duration_seconds(self):
+        fields = ['30_day', 'seven_day', '90_minute', 'five_hour', 'primary', 'seven_day_gpt_5_pro']
+        ordered = sorted(fields, key=_field_sort_key)
+        self.assertEqual(ordered, ['90_minute', 'five_hour', 'seven_day', 'seven_day_gpt_5_pro', '30_day', 'primary'])
+
+    def test_existing_relative_order_preserved(self):
+        fields = ['seven_day_opus', 'seven_day', 'five_hour']
+        self.assertEqual(sorted(fields, key=_field_sort_key), ['five_hour', 'seven_day', 'seven_day_opus'])
+
+
+class TestResolveDisplayFields(unittest.TestCase):
+    """Auto-substitution of absent configured fields for tray icon and tooltip."""
+
+    DATA_BOTH = {
+        'five_hour': {'utilization': 12, 'resets_at': 'x'},
+        'seven_day': {'utilization': 29, 'resets_at': 'y'},
+    }
+    DATA_WEEKLY_ONLY = {'seven_day': {'utilization': 29, 'resets_at': 'y'}}
+
+    def test_both_available_unchanged(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], self.DATA_BOTH, 2),
+            ['five_hour', 'seven_day'],
+        )
+
+    def test_missing_field_substituted(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], self.DATA_WEEKLY_ONLY, 2),
+            ['seven_day', None],
+        )
+
+    def test_earlier_gap_does_not_steal_later_configured_field(self):
+        self.assertEqual(
+            resolve_display_fields(['missing_field', 'five_hour'], self.DATA_BOTH, 2),
+            ['seven_day', 'five_hour'],
+        )
+
+    def test_zero_available(self):
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], {}, 2), [None, None])
+
+    def test_configured_duplicates_not_doubled(self):
+        self.assertEqual(
+            resolve_display_fields(['seven_day', 'seven_day'], self.DATA_BOTH, 2),
+            ['seven_day', 'five_hour'],
+        )
+
+    def test_more_than_two_detected(self):
+        data = dict(self.DATA_BOTH)
+        data['seven_day_gpt_5_pro'] = {'utilization': 3, 'resets_at': 'z'}
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'missing_field'], data, 2),
+            ['five_hour', 'seven_day'],
+        )
+
+    def test_mode_suffix_kept_for_existing_and_default_for_substituted(self):
+        self.assertEqual(
+            resolve_display_fields(['five_hour:overage', 'no_such:overage'], self.DATA_BOTH, 2),
+            ['five_hour:overage', 'seven_day'],
+        )
+
+    def test_extra_usage_never_selected(self):
+        data = {
+            'extra_usage': {'is_enabled': True, 'used_credits': 1, 'monthly_limit': 2},
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_tooltip_length_count(self):
+        self.assertEqual(resolve_display_fields(['five_hour'], self.DATA_BOTH, 1), ['five_hour'])
+
+    def test_missing_resets_at_is_not_a_quota_field(self):
+        data = {
+            'five_hour': {'utilization': 12},
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_non_dict_value_is_not_a_quota_field(self):
+        data = {
+            'five_hour': 'malformed',
+            'seven_day': {'utilization': 29, 'resets_at': 'y'},
+        }
+        self.assertEqual(resolve_display_fields(['five_hour', 'seven_day'], data, 2), ['seven_day', None])
+
+    def test_negative_count_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_display_fields(['five_hour'], self.DATA_BOTH, -1)
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +848,7 @@ class TestFormatTooltip(unittest.TestCase):
     def test_auth_error(self):
         data = {'error': 'Unauthorized', 'auth_error': True}
         result = format_tooltip(data)
-        self.assertEqual(result, 'Claude Session Expired\nPlease open Claude Code to refresh your session.')
+        self.assertEqual(result, "Codex Session Expired\nRun 'codex login' to refresh your session.")
 
     def test_error_with_server_message(self):
         data = {'error': 'API request failed (HTTP 429).', 'server_message': 'Rate limited.'}
@@ -746,12 +871,19 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': 42.0, 'resets_at': ''},
             'seven_day': {'utilization': 15.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 42%\n7d: 15%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 42%\n7d: 15%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    def test_missing_default_field_is_substituted(self, _mock_tu):
+        data = {'seven_day': {'utilization': 29.0, 'resets_at': ''}}
+        result = format_tooltip(data)
+        self.assertIn('7d: 29%', result)
+        self.assertNotIn('5h:', result)
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='Resets in 2h 30m (14:30)')
     def test_with_reset_info(self, _mock_tu):
         data = {'five_hour': {'utilization': 42.0, 'resets_at': '2025-01-15T14:30:00+00:00'}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 42% (Resets in 2h 30m (14:30))')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 42% (Resets in 2h 30m (14:30))')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_utilization_none_skipped(self, _mock_tu):
@@ -759,39 +891,39 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': None, 'resets_at': ''},
             'seven_day': {'utilization': 80.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 80%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 80%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_empty_data_shows_title_only(self, _mock_tu):
-        self.assertEqual(format_tooltip({}), 'Claude Usage')
+        self.assertEqual(format_tooltip({}), 'Codex Usage')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_zero_percent(self, _mock_tu):
         data = {'five_hour': {'utilization': 0.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 0%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 0%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_hundred_percent(self, _mock_tu):
         data = {'five_hour': {'utilization': 100.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 100%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 100%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_entry_none_skipped(self, _mock_tu):
         """Entry that is None is skipped by the guard clause."""
         data = {'five_hour': None, 'seven_day': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 50%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_entry_empty_dict_skipped(self, _mock_tu):
         """Entry with no utilization key is skipped."""
         data = {'five_hour': {}, 'seven_day': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 50%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_only_seven_day(self, _mock_tu):
         """Only seven_day present, five_hour absent."""
         data = {'seven_day': {'utilization': 25.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d: 25%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 25%')
 
     def test_auth_error_false_shows_normal_error(self):
         """auth_error=False with error shows normal error, not auth message."""
@@ -806,7 +938,7 @@ class TestFormatTooltip(unittest.TestCase):
             'five_hour': {'utilization': 26.0, 'resets_at': ''},
             'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 420.0},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n5h: 26%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 26%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet', 'five_hour'])
@@ -817,28 +949,28 @@ class TestFormatTooltip(unittest.TestCase):
             'seven_day': {'utilization': 20.0, 'resets_at': ''},
             'seven_day_sonnet': {'utilization': 30.0, 'resets_at': ''},
         }
-        self.assertEqual(format_tooltip(data), 'Claude Usage\n7d Sonnet: 30%\n5h: 10%')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d Sonnet: 30%\n5h: 10%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet'])
-    def test_custom_field_null_skipped(self, _mock_tu):
-        """Configured field that is null in API response is skipped."""
+    def test_custom_field_null_is_substituted(self, _mock_tu):
+        """A null configured field is replaced by the next quota field."""
         data = {'seven_day_sonnet': None, 'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['nonexistent_field'])
-    def test_custom_field_missing_from_response_skipped(self, _mock_tu):
-        """Configured field not present in API response is skipped."""
+    def test_custom_field_missing_from_response_is_substituted(self, _mock_tu):
+        """An absent configured field is replaced by the next quota field."""
         data = {'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', [])
     def test_empty_fields_shows_title_only(self, _mock_tu):
         """Empty tooltip_fields shows only the title."""
         data = {'five_hour': {'utilization': 50.0, 'resets_at': ''}}
-        self.assertEqual(format_tooltip(data), 'Claude Usage')
+        self.assertEqual(format_tooltip(data), 'Codex Usage')
 
 
 # ---------------------------------------------------------------------------

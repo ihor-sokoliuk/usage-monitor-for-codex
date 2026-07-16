@@ -1,14 +1,14 @@
 """
-Usage Monitor for Claude
-=========================
+Usage Monitor for Codex
+=======================
 
-Displays the current Claude.ai usage as a system tray icon.
+Displays the current Codex usage as a system tray icon.
 Left-click the icon to see a detailed usage popup.
 
-Authenticates via Claude Code OAuth token from the Claude config
-directory (requires Claude Code login).  Respects ``CLAUDE_CONFIG_DIR``
-if set, otherwise defaults to ``~/.claude/``.
+Reads account and rate-limit data from the local ``codex app-server``
+(requires the Codex CLI, signed in via ``codex login``). Respects
+``CODEX_HOME`` if set, otherwise defaults to ``~/.codex/``.
 """
 from __future__ import annotations
 
-__version__ = '1.19.0'
+__version__ = '1.0.0'

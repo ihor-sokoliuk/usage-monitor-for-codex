@@ -106,7 +106,7 @@ class TestEnsureSingleInstance(unittest.TestCase):
     @patch(f'{MODULE}.ctypes')
     def test_duplicate_user_accepts_returns_true(self, mock_ctypes, mock_store, mock_read, mock_terminate):
         """Duplicate detected, user clicks Yes - terminates old instance and returns True."""
-        mock_ctypes.get_last_error.return_value = 0xB7
+        mock_ctypes.get_last_error.side_effect = [0xB7, 0]
         mock_kernel32 = MagicMock()
         mock_kernel32.CreateMutexW.return_value = 42
 
@@ -121,6 +121,26 @@ class TestEnsureSingleInstance(unittest.TestCase):
         self.assertTrue(result)
         mock_terminate.assert_called_once_with(99999)
         self.assertEqual(mock_store.call_count, 1)
+
+    @patch(f'{MODULE}._terminate_pid')
+    @patch(f'{MODULE}._read_holder_info', return_value=(99999, '1.9.0'))
+    @patch(f'{MODULE}._store_holder_info')
+    @patch(f'{MODULE}.ctypes')
+    def test_replacement_aborts_when_mutex_still_exists(self, mock_ctypes, mock_store, _read, _terminate):
+        mock_ctypes.get_last_error.side_effect = [0xB7, 0xB7]
+        mock_kernel32 = MagicMock()
+        mock_kernel32.CreateMutexW.return_value = 42
+        mock_user32 = MagicMock()
+        mock_user32.MessageBoxW.return_value = 6
+
+        with patch(f'{MODULE}._kernel32', mock_kernel32), \
+             patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
+            from usage_monitor_for_claude.single_instance import ensure_single_instance
+            result = ensure_single_instance()
+
+        self.assertFalse(result)
+        mock_store.assert_not_called()
+        self.assertEqual(mock_user32.MessageBoxW.call_count, 2)
 
     @patch(f'{MODULE}._read_holder_info', return_value=(99999, '1.9.0'))
     @patch(f'{MODULE}.ctypes')
@@ -193,8 +213,8 @@ class TestObjectNames(unittest.TestCase):
         with patch(f'{MODULE}.config_dir_suffix', return_value=''):
             mutex_name, mapping_name = si._object_names()
 
-        self.assertEqual(mutex_name, 'UsageMonitorForClaude_SingleInstance')
-        self.assertEqual(mapping_name, 'UsageMonitorForClaude_HolderPID')
+        self.assertEqual(mutex_name, 'UsageMonitorForCodex_SingleInstance')
+        self.assertEqual(mapping_name, 'UsageMonitorForCodex_HolderPID')
 
     def test_custom_config_dir_appends_suffix(self):
         """A custom config dir yields suffixed, per-instance names."""
@@ -203,17 +223,17 @@ class TestObjectNames(unittest.TestCase):
         with patch(f'{MODULE}.config_dir_suffix', return_value='_abc123def456'):
             mutex_name, mapping_name = si._object_names()
 
-        self.assertEqual(mutex_name, 'UsageMonitorForClaude_SingleInstance_abc123def456')
-        self.assertEqual(mapping_name, 'UsageMonitorForClaude_HolderPID_abc123def456')
+        self.assertEqual(mutex_name, 'UsageMonitorForCodex_SingleInstance_abc123def456')
+        self.assertEqual(mapping_name, 'UsageMonitorForCodex_HolderPID_abc123def456')
 
     def test_two_config_dirs_get_distinct_names(self):
         """Two different config dirs never collide on kernel object names."""
         import usage_monitor_for_claude.single_instance as si
 
         with TemporaryDirectory() as dir_a, TemporaryDirectory() as dir_b:
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': dir_a}):
+            with patch.dict('os.environ', {'CODEX_HOME': dir_a}):
                 names_a = si._object_names()
-            with patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': dir_b}):
+            with patch.dict('os.environ', {'CODEX_HOME': dir_b}):
                 names_b = si._object_names()
 
         self.assertNotEqual(names_a[0], names_b[0])

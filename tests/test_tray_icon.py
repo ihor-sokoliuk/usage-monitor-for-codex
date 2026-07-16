@@ -219,20 +219,50 @@ class TestCreateIconImage(unittest.TestCase):
         self.assertNotEqual(img_full.tobytes(), img_zero.tobytes())
 
     def test_boundary_zero_differs_from_one(self):
-        """0% (shows 'C') and 1% (shows percentage) produce different icons."""
+        """0% (shows the Codex prompt) and 1% (shows percentage) differ."""
         img_zero = tray_icon_mod.create_icon_image(0, 0)
         img_one = tray_icon_mod.create_icon_image(1, 0)
 
         self.assertNotEqual(img_zero.tobytes(), img_one.tobytes())
 
+    @patch.object(tray_icon_mod, '_draw_usage_bar')
+    def test_single_available_limit_draws_one_centered_bar(self, draw_bar):
+        tray_icon_mod.create_icon_image(67, 0, bar_count=1)
+
+        draw_bar.assert_called_once()
+        expected_y = tray_icon_mod.ICON_SIZE - tray_icon_mod.BAR_HEIGHT - (
+            tray_icon_mod.BAR_HEIGHT + tray_icon_mod.BAR_GAP
+        ) // 2
+        self.assertEqual(draw_bar.call_args.args[1], expected_y)
+        self.assertEqual(draw_bar.call_args.args[2], 67)
+
+    @patch.object(tray_icon_mod, '_draw_usage_bar')
+    def test_no_available_limits_draws_no_bars(self, draw_bar):
+        tray_icon_mod.create_icon_image(0, 0, bar_count=0)
+
+        draw_bar.assert_not_called()
+
     @patch.object(tray_icon_mod, 'load_font')
-    def test_zero_usage_calls_font_size_42(self, mock_font):
-        """Usage of 0% requests size 42 font for 'C' letter."""
+    def test_zero_usage_calls_font_size_36(self, mock_font):
+        """Usage of 0% requests the Codex prompt font size."""
         mock_font.return_value = _real_font()
 
         tray_icon_mod.create_icon_image(0, 0)
 
-        mock_font.assert_any_call(42)
+        mock_font.assert_any_call(36)
+
+
+class TestZeroStateGlyph(unittest.TestCase):
+    def test_glyph_constant(self):
+        self.assertEqual(tray_icon_mod.ZERO_STATE_GLYPH, '>_')
+
+    @patch.object(tray_icon_mod.ImageDraw, 'Draw')
+    @patch.object(tray_icon_mod, 'load_font')
+    def test_zero_usage_renders_codex_prompt(self, mock_font, draw_factory):
+        draw = draw_factory.return_value
+        draw.textbbox.return_value = (0, 0, 20, 20)
+        tray_icon_mod.create_icon_image(0, 0)
+        self.assertEqual(draw.text.call_args.args[1], '>_')
 
     @patch.object(tray_icon_mod, 'load_font')
     def test_nonzero_usage_calls_font_size_40(self, mock_font):

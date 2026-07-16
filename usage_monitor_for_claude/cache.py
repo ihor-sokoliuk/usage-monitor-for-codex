@@ -2,10 +2,9 @@
 Usage Cache
 ============
 
-Thread-safe cache for API data - single source of truth for all usage
-state.  All API refresh requests go through ``UsageCache.update()``,
-which uses a lock to prevent concurrent calls and a cooldown to prevent
-calls that are too close together (HTTP 429).
+Thread-safe cache for provider data - the single source of truth for usage
+state. All refresh requests go through ``UsageCache.update()``, whose lock
+and cooldown preserve the upstream polling and backoff invariants.
 """
 from __future__ import annotations
 
@@ -15,8 +14,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from .api import fetch_profile, fetch_usage, read_access_token
-from .claude_cli import RefreshResult, refresh_token
+from .api import fetch_provider_data, refresh_profile as adapter_refresh_profile, shutdown_transport
+from .codex_cli import CliUpdateResult, update_cli
+from .i18n import T
 from .settings import MAX_BACKOFF, POLL_FAST, POLL_INTERVAL
 
 __all__ = ['CacheSnapshot', 'UpdateResult', 'UsageCache']
@@ -43,21 +43,18 @@ class UpdateResult:
     Attributes
     ----------
     data : dict or None
-        Raw API response dict, or ``None`` when the call was skipped
+        Provider response dict, or ``None`` when the call was skipped
         (lock held or cooldown active).
-    token_refresh : RefreshResult or None
-        Set when a token refresh was attempted after a 401 auth error.
     """
 
     data: dict[str, Any] | None
-    token_refresh: RefreshResult | None = None
 
 
 class UsageCache:
-    """Thread-safe cache managing API data, cooldown, and error state.
+    """Thread-safe cache managing provider data, cooldown, and error state.
 
-    All callers (poll loop, popup) go through ``update()`` instead
-    of calling ``fetch_usage()`` directly.
+    All callers (poll loop, popup) go through ``update()`` instead of
+    calling the provider adapter directly.
     """
 
     def __init__(self) -> None:
@@ -66,13 +63,12 @@ class UsageCache:
         self._profile_lock = threading.Lock()
         self._usage: dict[str, Any] = {}
         self._profile: dict[str, Any] | None = None
-        self._profile_token: str | None = None
         self._last_success_time: float | None = None
         self._refreshing = False
         self._last_error: str | None = None
         self._version = 0
         self._consecutive_errors = 0
-        self._last_failed_token: str | None = None
+        self._recovery_attempted = False
         self._rate_limit_until: float = 0
 
     # Public properties
@@ -128,46 +124,52 @@ class UsageCache:
     # Public methods
 
     def ensure_profile(self, *, bypass_rate_limit: bool = False) -> None:
-        """Fetch the account profile if not yet loaded, or re-fetch if the access token changed (thread-safe).
+        """Fetch the account profile if it has not been loaded yet.
 
-        Acquires ``_lock`` around the HTTP call to prevent concurrent
-        API requests with ``update()``.  Skips the fetch while a
-        rate-limit backoff is active so a failed profile request does not
-        keep hammering an already 429-limited endpoint.
+        Profile-only reads share ``_lock`` with combined usage updates, so
+        their provider result and state commit cannot be overtaken by an
+        older combined operation. A rate-limit backoff still suppresses the
+        popup cold path unless explicitly bypassed.
 
         Parameters
         ----------
         bypass_rate_limit : bool
-            When True, probe the profile even during a 429 backoff.  Used
-            for the immediate account-switch check: the newly selected
-            account has its own quota and cannot be the source of the
-            backoff, so its identity must be readable right away.
+            When True, probe the profile even during the retained provider
+            backoff window. Used for immediate account-switch checks, where
+            identity confirmation must not wait on stale throttling state.
         """
-        current_token = read_access_token()
-        if self._profile is not None and self._profile_token == current_token:
+        if self._profile is not None:
             return
 
         with self._profile_lock:
-            current_token = read_access_token()
-            if self._profile is not None and self._profile_token == current_token:
+            if self._profile is not None:
                 return
 
-            # Respect the rate-limit backoff window. A failed profile fetch
-            # leaves _profile as None, so without this guard every popup open
-            # would re-fire a request against an already 429-limited endpoint
-            # and could prolong the backoff.
+            # Respect the retained rate-limit backoff window. A failed profile
+            # fetch leaves _profile as None, so without this guard every popup
+            # open would retry while the provider is already backing off.
             if not bypass_rate_limit and time.time() < self._rate_limit_until:
                 log.debug('ensure_profile skipped (rate-limit backoff, %.0fs remaining)', self._rate_limit_until - time.time())
                 return
 
-            log.info('fetch_profile started')
+            log.info('refresh_profile (cold path) started')
             with self._lock:
-                profile = fetch_profile()
-            with self._state_lock:
-                self._profile = profile
-                self._profile_token = current_token
-                self._version += 1
-            log.info('fetch_profile -> %s', 'OK' if profile else 'failed')
+                if self._profile is not None:
+                    return
+                self._store_profile(adapter_refresh_profile())
+
+    def refresh_profile(self) -> None:
+        """Fetch fresh account state independently of the usage cooldown."""
+        with self._profile_lock:
+            with self._lock:
+                log.info('refresh_profile started')
+                self._store_profile(adapter_refresh_profile())
+
+    def update_codex_cli(self) -> CliUpdateResult:
+        """Stop provider operations and run the official Codex self-updater."""
+        with self._lock:
+            shutdown_transport()
+            return update_cli()
 
     def update(self, *, force: bool = False) -> UpdateResult:
         """Fetch usage data with lock and cooldown protection.
@@ -175,19 +177,16 @@ class UsageCache:
         Parameters
         ----------
         force : bool
-            When True, bypass the ``POLL_FAST`` cooldown and the 429
-            rate-limit backoff for this single fetch.  Used only for an
-            immediate refresh after a confirmed account switch: the newly
-            selected account has no polling history, so it cannot be the
-            source of a rate limit those throttles guard against.  The
-            update lock is still honored, so concurrent fetches never run.
+            When True, bypass the ``POLL_FAST`` cooldown and retained
+            rate-limit backoff for this single fetch. Used only after a
+            confirmed account switch. The update lock is still honored, so
+            concurrent fetches never run.
 
         Returns
         -------
         UpdateResult
-            Contains the API response dict (``data``), or ``None``
-            when the call was skipped.  If a token refresh was
-            attempted, ``token_refresh`` carries the outcome.
+            Contains the provider response dict (``data``), or ``None``
+            when the call was skipped.
         """
         if not self._lock.acquire(blocking=False):
             log.debug('update skipped (another update in progress)')
@@ -210,12 +209,6 @@ class UsageCache:
             log.debug('update skipped (rate-limit backoff, %.0fs remaining)', self._rate_limit_until - time.time())
             return UpdateResult(data=None)
 
-        if self._last_failed_token is not None:
-            if read_access_token() == self._last_failed_token:
-                log.debug('update skipped (token unchanged after auth failure)')
-                return UpdateResult(data=None)
-            self._last_failed_token = None
-
         with self._state_lock:
             self._refreshing = True
             self._version += 1
@@ -223,19 +216,45 @@ class UsageCache:
         try:
             return self._fetch_and_process()
         except Exception:
-            with self._state_lock:
-                self._refreshing = False
-                self._version += 1
-            raise
+            log.exception('unexpected provider update failure')
+            data = {'error': T['connection_error']}
+            self._record_error_state(data, None, False)
+            return UpdateResult(data=data)
 
     def _fetch_and_process(self) -> UpdateResult:
-        """Fetch usage data and process the response."""
-        token_before = read_access_token()
-        log.info('fetch_usage started')
-        data = fetch_usage()
+        """Fetch usage and profile together and process one provider result."""
+        with self._state_lock:
+            allow_recovery = not self._recovery_attempted
+        log.info('fetch_provider_data started (allow_recovery=%s)', allow_recovery)
+        result = fetch_provider_data(allow_recovery=allow_recovery)
+        data = result.usage
 
         if 'error' in data:
-            self._record_error(data)
+            delay = self._record_error_state(data, result.profile, result.recovery_attempted)
+            if delay is not None:
+                log.warning('fetch_provider_data -> rate limited, backoff %.0fs', delay)
+            else:
+                log.warning('fetch_provider_data -> error: %s', data['error'])
+            return UpdateResult(data=data)
+
+        pct_5h = (data.get('five_hour') or {}).get('utilization')
+        pct_7d = (data.get('seven_day') or {}).get('utilization')
+        log.info('fetch_provider_data -> OK (5h: %s%%, 7d: %s%%)',
+                 pct_5h if pct_5h is not None else '?', pct_7d if pct_7d is not None else '?')
+        self._record_success(data, result.profile)
+        return UpdateResult(data=data)
+
+    def _record_error_state(self, data: dict[str, Any], profile: dict[str, Any] | None,
+                            recovery_attempted: bool) -> float | None:
+        """Apply an error cycle atomically and return its backoff delay."""
+        delay = None
+        with self._state_lock:
+            self._consecutive_errors += 1
+            error = data['error']
+            server_msg = data.get('server_message')
+            if server_msg:
+                error += f'\n{server_msg}'
+            self._last_error = error
 
             if data.get('rate_limited'):
                 retry_after = data.get('retry_after')
@@ -244,53 +263,16 @@ class UsageCache:
                 else:
                     delay = min(POLL_INTERVAL * (2 ** max(self._consecutive_errors - 1, 0)), MAX_BACKOFF)
                 self._rate_limit_until = time.time() + delay
-                log.warning('fetch_usage -> rate limited, backoff %.0fs', delay)
 
-            token_refresh = None
-            if data.get('auth_error'):
-                log.warning('fetch_usage -> auth error, attempting token refresh')
-                token_refresh = self._try_token_refresh(token_before)
-                if token_refresh is not None and self._last_error is None:
-                    # Token refresh succeeded and retry was successful
-                    return UpdateResult(data=self._usage, token_refresh=token_refresh)
-                if token_refresh is None:
-                    # Refresh failed or token unchanged - block this token
-                    self._last_failed_token = token_before
-            elif not data.get('rate_limited'):
-                log.warning('fetch_usage -> error: %s', data['error'])
+            self._store_profile_locked(profile)
+            if recovery_attempted:
+                self._recovery_attempted = True
+            self._refreshing = False
+            self._version += 1
+        return delay
 
-            with self._state_lock:
-                self._refreshing = False
-                self._version += 1
-            return UpdateResult(data=data, token_refresh=token_refresh)
-
-        pct_5h = (data.get('five_hour') or {}).get('utilization')
-        pct_7d = (data.get('seven_day') or {}).get('utilization')
-        log.info('fetch_usage -> OK (5h: %s%%, 7d: %s%%)', pct_5h if pct_5h is not None else '?', pct_7d if pct_7d is not None else '?')
-        self._record_success(data)
-        return UpdateResult(data=data)
-
-    def _record_error(self, data: dict[str, Any], *, count: bool = True) -> None:
-        """Apply common state updates after a failed API response.
-
-        Parameters
-        ----------
-        data : dict
-            API response containing ``'error'`` and optional ``'server_message'``.
-        count : bool
-            If True (default), increment ``_consecutive_errors``.
-        """
-        with self._state_lock:
-            if count:
-                self._consecutive_errors += 1
-            error = data['error']
-            server_msg = data.get('server_message')
-            if server_msg:
-                error += f'\n{server_msg}'
-            self._last_error = error
-
-    def _record_success(self, data: dict[str, Any]) -> None:
-        """Apply common state updates after a successful API response."""
+    def _record_success(self, data: dict[str, Any], profile: dict[str, Any] | None) -> None:
+        """Apply common state updates after a successful provider response."""
         # _usage is always reassigned (never mutated in place), so existing
         # CacheSnapshot references remain valid after this update.
         with self._state_lock:
@@ -298,58 +280,26 @@ class UsageCache:
             self._last_error = None
             self._last_success_time = time.time()
             self._rate_limit_until = 0
-            self._last_failed_token = None
+            self._recovery_attempted = False
+            self._store_profile_locked(profile)
             self._usage = data
             self._refreshing = False
             self._version += 1
 
-    def _try_token_refresh(self, token_before: str | None) -> RefreshResult | None:
-        """Obtain a working access token after a 401 and retry the usage fetch.
+    def _store_profile(self, profile: dict[str, Any] | None) -> None:
+        """Store a profile result: dict replaces and None preserves."""
+        if profile is None:
+            return
+        with self._state_lock:
+            self._store_profile_locked(profile)
+            self._version += 1
 
-        If the credentials already hold a different token - the user
-        switched accounts, or the token was refreshed out of band since
-        this request began - it is retried directly, skipping the slow
-        ``claude update``.  Only an unchanged token is refreshed via the
-        CLI.
-
-        Parameters
-        ----------
-        token_before : str or None
-            The token that was used for the failed request.
-
-        Returns
-        -------
-        RefreshResult or None
-            The outcome to report to the caller, or ``None`` when no usable
-            token could be obtained (CLI unavailable, or token unchanged
-            after the refresh).
-        """
-        result = RefreshResult(success=True, updated=False, old_version='', new_version='', error='')
-
-        if read_access_token() in (token_before, None):
-            # Token unchanged - refresh it via the CLI (claude update).
-            result = refresh_token()
-            if not result.success:
-                log.info('token refresh failed: %s', result.error)
-                return None
-
-            if read_access_token() == token_before:
-                log.info('token refresh succeeded but token unchanged')
-                return None
-
-            log.info('token changed via refresh, retrying fetch_usage')
-        else:
-            log.info('token already changed, retrying fetch_usage without CLI refresh')
-
-        data = fetch_usage()
-        if 'error' not in data:
-            log.info('retry -> OK')
-            self._record_success(data)
-            return result
-
-        log.warning('retry -> error: %s', data['error'])
-        # Update error message but do not increment _consecutive_errors
-        # again (the caller already counted this update cycle as one error).
-        self._record_error(data, count=False)
-
-        return result
+    def _store_profile_locked(self, profile: dict[str, Any] | None) -> None:
+        """Store a profile while holding the state lock."""
+        if profile is None:
+            return
+        previous_uuid = (self._profile or {}).get('account', {}).get('uuid') if isinstance(self._profile, dict) else None
+        new_uuid = profile.get('account', {}).get('uuid') if profile else None
+        if new_uuid != previous_uuid:
+            self._recovery_attempted = False
+        self._profile = profile

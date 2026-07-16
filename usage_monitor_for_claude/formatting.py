@@ -16,7 +16,7 @@ from .settings import CURRENCY_SYMBOL, TIME_FORMAT, TOOLTIP_FIELDS, _SYSTEM_CURR
 
 __all__ = [
     'divider_positions', 'elapsed_pct', 'expand_popup_fields', 'field_period', 'format_credits',
-    'format_tooltip', 'parse_field_name', 'popup_label', 'time_until', 'tooltip_label',
+    'format_tooltip', 'parse_field_name', 'popup_label', 'resolve_display_fields', 'time_until', 'tooltip_label',
 ]
 
 PERIOD_5H = 5 * 3600
@@ -26,8 +26,8 @@ _NUMBER_WORDS = {
     'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6,
     'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12,
 }
-_UNIT_SUFFIXES = {'hour': 'h', 'day': 'd'}
-_TITLE_CASE_EXCEPTIONS = {'oauth': 'OAuth', 'api': 'API', 'ai': 'AI'}
+_UNIT_SUFFIXES = {'minute': 'm', 'hour': 'h', 'day': 'd'}
+_TITLE_CASE_EXCEPTIONS = {'oauth': 'OAuth', 'api': 'API', 'ai': 'AI', 'gpt': 'GPT'}
 _CURRENCY_SYMBOLS = {
     'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CNY': '¥',
     'INR': '₹', 'KRW': '₩', 'BRL': 'R$', 'CAD': 'CA$', 'AUD': 'A$', 'CHF': 'CHF',
@@ -45,8 +45,8 @@ def parse_field_name(field: str) -> tuple[int, str, str | None] | None:
     Returns
     -------
     tuple or None
-        ``(number, unit, variant)`` where *number* is the parsed digit,
-        *unit* is the raw unit word (e.g. ``'hour'``, ``'day'``), and
+        ``(number, unit, variant)`` where *number* is the parsed number,
+        *unit* is the raw unit word (e.g. ``'minute'``, ``'hour'``, ``'day'``), and
         *variant* is the remaining suffix or ``None``.
         Returns ``None`` if the number word or unit is not recognized.
     """
@@ -54,7 +54,10 @@ def parse_field_name(field: str) -> tuple[int, str, str | None] | None:
     if len(parts) < 2:
         return None
 
-    number = _NUMBER_WORDS.get(parts[0])
+    if parts[0].isdigit():
+        number = int(parts[0])
+    else:
+        number = _NUMBER_WORDS.get(parts[0])
     unit = parts[1]
     if number is None or unit not in _UNIT_SUFFIXES:
         return None
@@ -116,10 +119,12 @@ def popup_label(field: str) -> str:
         suffix = _title_case_variant(variant)
     elif unit == 'hour':
         suffix = f'{number}hr'
+    elif unit == 'minute':
+        suffix = f'{number}min'
     else:
         suffix = f'{number} {unit}'
 
-    template_key = 'session_label' if unit == 'hour' else 'weekly_label'
+    template_key = 'weekly_label' if unit == 'day' else 'session_label'
     return T[template_key].format(suffix=suffix)
 
 
@@ -136,6 +141,8 @@ def field_period(field: str) -> int | None:
         return None
 
     number, unit, _ = parsed
+    if unit == 'minute':
+        return number * 60
     if unit == 'hour':
         return number * 3600
     if unit == 'day':
@@ -144,15 +151,15 @@ def field_period(field: str) -> int | None:
 
 
 def _field_sort_key(field: str) -> tuple[int, int, int, str]:
-    """Sort key for default field ordering: shorter periods first, base before variants."""
-    parsed = parse_field_name(field)
-    if parsed is None:
-        return (2, 0, 0, field)
+    """Sort key: shorter period durations first, base before variants, unparseable fields last."""
+    period = field_period(field)
+    if period is None:
+        return (1, 0, 0, field)
 
-    number, unit, variant = parsed
-    unit_order = 0 if unit == 'hour' else 1
+    parsed = parse_field_name(field)
+    variant = parsed[2] if parsed else None
     variant_order = 0 if variant is None else 1
-    return (unit_order, number, variant_order, variant or '')
+    return (0, period, variant_order, variant or '')
 
 
 def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> list[str]:
@@ -190,6 +197,68 @@ def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> 
             result.append(field)
 
     return result
+
+
+def resolve_display_fields(configured: list[str], data: dict[str, Any], count: int) -> list[str | None]:
+    """Resolve configured display fields against the fields actually present in the data.
+
+    Each configured entry keeps its slot (including a ``:mode`` suffix) when its
+    base field is still available. Missing or duplicate entries are replaced by
+    the next remaining detected field in duration order, using the default mode.
+    Slots with nothing left to show are ``None``.
+
+    Parameters
+    ----------
+    configured : list[str]
+        Configured field entries, e.g. ``['five_hour', 'seven_day:overage']``.
+    data : dict
+        Usage data dict (quota fields plus ``extra_usage``).
+    count : int
+        Number of slots to return; must be nonnegative.
+
+    Returns
+    -------
+    list[str or None]
+        Resolved field entries, always exactly *count* elements long.
+
+    Raises
+    ------
+    ValueError
+        If *count* is negative.
+    """
+    if count < 0:
+        raise ValueError('count must be nonnegative')
+
+    detected = []
+    for key, value in data.items():
+        if key == 'extra_usage' or not isinstance(value, dict):
+            continue
+        if 'utilization' not in value or 'resets_at' not in value:
+            continue
+        if value.get('utilization') is not None:
+            detected.append(key)
+    detected.sort(key=_field_sort_key)
+
+    remaining = detected.copy()
+    slots: list[str | None] = []
+    for entry in configured[:count]:
+        base = entry.split(':', 1)[0]
+        if base in remaining:
+            remaining.remove(base)
+            slots.append(entry)
+        else:
+            slots.append(None)
+    while len(slots) < count:
+        slots.append(None)
+
+    for index, slot in enumerate(slots):
+        if slot is None and remaining:
+            slots[index] = remaining.pop(0)
+
+    populated = [slot for slot in slots if slot is not None]
+    populated.extend([None] * (count - len(populated)))
+
+    return populated
 
 
 def elapsed_pct(resets_at: str, period_seconds: int) -> float | None:
@@ -412,7 +481,10 @@ def format_tooltip(data: dict[str, Any]) -> str:
         return f"{T['error_label']}\n{error[:80]}"
 
     lines = [T['tooltip_title']]
-    for key in TOOLTIP_FIELDS:
+    for resolved in resolve_display_fields(TOOLTIP_FIELDS, data, len(TOOLTIP_FIELDS)):
+        if resolved is None:
+            continue
+        key = resolved.split(':', 1)[0]
         entry = data.get(key)
         if entry and entry.get('utilization') is not None:
             short = tooltip_label(key)

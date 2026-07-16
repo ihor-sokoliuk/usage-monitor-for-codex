@@ -12,14 +12,14 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.app import (
-    POLL_FAST, RESET_BUFFER, WM_LBUTTONDBLCLK, WM_LBUTTONUP, UsageMonitorForClaude, _align_to_reset,
+    POLL_FAST, RESET_BUFFER, WM_LBUTTONDBLCLK, WM_LBUTTONUP, UsageMonitorForCodex, _align_to_reset,
 )
 from usage_monitor_for_claude.cache import UpdateResult
-from usage_monitor_for_claude.claude_cli import RefreshResult
+from usage_monitor_for_claude.codex_cli import CliUpdateResult
 
 
-def _make_app(thresholds: list[float] | None = None) -> UsageMonitorForClaude:
-    """Create a UsageMonitorForClaude with mocked icon and configurable thresholds.
+def _make_app(thresholds: list[float] | None = None) -> UsageMonitorForCodex:
+    """Create a UsageMonitorForCodex with mocked icon and configurable thresholds.
 
     Parameters
     ----------
@@ -31,7 +31,7 @@ def _make_app(thresholds: list[float] | None = None) -> UsageMonitorForClaude:
     with patch('usage_monitor_for_claude.app.pystray'), \
          patch('usage_monitor_for_claude.app.create_icon_image'), \
          patch('usage_monitor_for_claude.app.taskbar_uses_light_theme', return_value=False):
-        app = UsageMonitorForClaude()
+        app = UsageMonitorForCodex()
     app.icon = MagicMock()
     # Patches active for the app's lifetime, stopped by _cleanup.  The presence
     # defaults keep _is_user_away() False so notification tests are deterministic
@@ -40,13 +40,14 @@ def _make_app(thresholds: list[float] | None = None) -> UsageMonitorForClaude:
         patch('usage_monitor_for_claude.app.get_alert_thresholds', return_value=thresholds),
         patch('usage_monitor_for_claude.app.is_workstation_locked', return_value=False),
         patch('usage_monitor_for_claude.app.get_idle_seconds', return_value=0.0),
+        patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', False),
     ]
     for active_patch in app._patches:
         active_patch.start()
     return app
 
 
-def _cleanup(app: UsageMonitorForClaude) -> None:
+def _cleanup(app: UsageMonitorForCodex) -> None:
     """Stop patches started by _make_app."""
     for active_patch in app._patches:
         active_patch.stop()
@@ -480,7 +481,7 @@ class TestUpdateOrchestration(unittest.TestCase):
         self.app.cache = MagicMock()
         self.app.cache.update.return_value = UpdateResult(data=None)
 
-        self.app.update()
+        self.assertFalse(self.app.update())
 
         self.assertEqual(self.app._last_response, {})
 
@@ -495,6 +496,7 @@ class TestUpdateOrchestration(unittest.TestCase):
         self.app.update()
 
         self.assertEqual(self.app._last_response, data)
+        self.app.cache.ensure_profile.assert_not_called()
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_status_image')
@@ -507,49 +509,6 @@ class TestUpdateOrchestration(unittest.TestCase):
         self.app.update()
 
         self.assertEqual(self.app._last_response, data)
-
-    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
-    @patch('usage_monitor_for_claude.app.create_icon_image')
-    def test_token_refresh_notification(self, _icon, _tooltip):
-        """Shows notification when token refresh updated CLI version."""
-        data = {'five_hour': {'utilization': 10.0}}
-        refresh = RefreshResult(success=True, updated=True, old_version='2.1.38', new_version='2.1.69', error='')
-        self.app.cache = MagicMock()
-        self.app.cache.update.return_value = UpdateResult(data=data, token_refresh=refresh)
-
-        self.app.update()
-
-        self.app.icon.notify.assert_called_once()
-        args = self.app.icon.notify.call_args[0]
-        self.assertIn('2.1.38', args[0])
-        self.assertIn('2.1.69', args[0])
-
-    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
-    @patch('usage_monitor_for_claude.app.create_icon_image')
-    def test_no_notification_when_no_cli_update(self, _icon, _tooltip):
-        """No notification when token refreshed but no CLI update."""
-        data = {'five_hour': {'utilization': 10.0}}
-        refresh = RefreshResult(success=True, updated=False, old_version='2.1.69', new_version='2.1.69', error='')
-        self.app.cache = MagicMock()
-        self.app.cache.update.return_value = UpdateResult(data=data, token_refresh=refresh)
-
-        self.app.update()
-
-        self.app.icon.notify.assert_not_called()
-
-    @patch('usage_monitor_for_claude.app.NOTIFY_CLAUDE_UPDATE', False)
-    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
-    @patch('usage_monitor_for_claude.app.create_icon_image')
-    def test_update_notification_suppressed_when_disabled(self, _icon, _tooltip):
-        """No notification when notify_claude_update is disabled, even after a CLI update."""
-        data = {'five_hour': {'utilization': 10.0}}
-        refresh = RefreshResult(success=True, updated=True, old_version='2.1.38', new_version='2.1.69', error='')
-        self.app.cache = MagicMock()
-        self.app.cache.update.return_value = UpdateResult(data=data, token_refresh=refresh)
-
-        self.app.update()
-
-        self.app.icon.notify.assert_not_called()
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_status_image')
@@ -881,10 +840,13 @@ class TestRenderTray(unittest.TestCase):
     @patch('usage_monitor_for_claude.app.create_icon_image')
     def test_success_renders_icon(self, mock_icon, _tooltip):
         """Successful data renders usage icon."""
-        self.app._last_response = {'five_hour': {'utilization': 42.0}, 'seven_day': {'utilization': 10.0}}
+        self.app._last_response = {
+            'five_hour': {'utilization': 42.0, 'resets_at': ''},
+            'seven_day': {'utilization': 10.0, 'resets_at': ''},
+        }
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(42.0, 10.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(42.0, 10.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=2)
         self.assertEqual(self.app.icon.title, 'Usage: 42%')
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='Error')
@@ -898,12 +860,12 @@ class TestRenderTray(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='Auth Error')
     @patch('usage_monitor_for_claude.app.create_status_image')
-    def test_auth_error_renders_c_exclamation(self, mock_status, _tooltip):
-        """Auth error data renders 'C!' status icon."""
+    def test_auth_error_renders_codex_exclamation(self, mock_status, _tooltip):
+        """Auth error data renders the distinct Codex status icon."""
         self.app._last_response = {'error': 'expired', 'auth_error': True}
         self.app._render_tray()
 
-        mock_status.assert_called_once_with('C!', False)
+        mock_status.assert_called_once_with('>!', False)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -912,7 +874,7 @@ class TestRenderTray(unittest.TestCase):
         self.app._last_response = {'five_hour': {}, 'seven_day': {'utilization': None}}
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(0, 0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(0, 0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=0)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -920,32 +882,32 @@ class TestRenderTray(unittest.TestCase):
     def test_custom_icon_fields(self, mock_icon, _tooltip):
         """Custom icon_fields setting changes which fields are shown in the icon."""
         self.app._last_response = {
-            'five_hour': {'utilization': 30.0},
-            'seven_day_sonnet': {'utilization': 75.0},
+            'five_hour': {'utilization': 30.0, 'resets_at': ''},
+            'seven_day_sonnet': {'utilization': 75.0, 'resets_at': ''},
         }
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(75.0, 30.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(75.0, 30.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=2)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
     @patch('usage_monitor_for_claude.app.ICON_FIELDS', ['unknown_field', 'five_hour'])
-    def test_icon_fields_missing_from_response_defaults_to_zero(self, mock_icon, _tooltip):
-        """Icon field not present in API response defaults to 0%."""
-        self.app._last_response = {'five_hour': {'utilization': 42.0}}
+    def test_icon_fields_missing_from_response_are_substituted(self, mock_icon, _tooltip):
+        """An absent configured field is replaced by a detected quota field."""
+        self.app._last_response = {'five_hour': {'utilization': 42.0, 'resets_at': ''}}
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(0, 42.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(42.0, 0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=1)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
     @patch('usage_monitor_for_claude.app.ICON_FIELDS', ['seven_day_sonnet', 'five_hour'])
     def test_icon_fields_null_in_response_defaults_to_zero(self, mock_icon, _tooltip):
         """Icon field present but null in API response defaults to 0%."""
-        self.app._last_response = {'five_hour': {'utilization': 42.0}, 'seven_day_sonnet': None}
+        self.app._last_response = {'five_hour': {'utilization': 42.0, 'resets_at': ''}, 'seven_day_sonnet': None}
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(0, 42.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(42.0, 0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=1)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -955,11 +917,11 @@ class TestRenderTray(unittest.TestCase):
         """Elapsed time pct is passed for both bars regardless of display mode."""
         self.app._last_response = {
             'five_hour': {'utilization': 60.0, 'resets_at': '2025-01-15T18:00:00Z'},
-            'seven_day': {'utilization': 20.0},
+            'seven_day': {'utilization': 20.0, 'resets_at': ''},
         }
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(60.0, 20.0, False, mode_top='overage', mode_bottom='utilization', time_pct_top=40.0, time_pct_bottom=40.0, extra_usage_available=False)
+        mock_icon.assert_called_once_with(60.0, 20.0, False, mode_top='overage', mode_bottom='utilization', time_pct_top=40.0, time_pct_bottom=40.0, extra_usage_available=False, bar_count=2)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -973,7 +935,7 @@ class TestRenderTray(unittest.TestCase):
         }
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(30.0, 10.0, False, mode_top='overage', mode_bottom='overage', time_pct_top=50.0, time_pct_bottom=50.0, extra_usage_available=False)
+        mock_icon.assert_called_once_with(30.0, 10.0, False, mode_top='overage', mode_bottom='overage', time_pct_top=50.0, time_pct_bottom=50.0, extra_usage_available=False, bar_count=2)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -986,7 +948,7 @@ class TestRenderTray(unittest.TestCase):
         }
         self.app._render_tray()
 
-        mock_icon.assert_called_once_with(42.0, 10.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=35.0, time_pct_bottom=35.0, extra_usage_available=False)
+        mock_icon.assert_called_once_with(42.0, 10.0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=35.0, time_pct_bottom=35.0, extra_usage_available=False, bar_count=2)
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
@@ -995,7 +957,7 @@ class TestRenderTray(unittest.TestCase):
         """Field name in overage mode is correctly stripped of mode suffix for data lookup."""
         self.app._last_response = {
             'five_hour': {'utilization': 55.0, 'resets_at': '2025-01-15T18:00:00Z'},
-            'seven_day': {'utilization': 25.0},
+            'seven_day': {'utilization': 25.0, 'resets_at': ''},
         }
         self.app._render_tray()
 
@@ -1008,8 +970,8 @@ class TestRenderTray(unittest.TestCase):
     def test_extra_usage_available_true_when_credits_remain(self, mock_icon, _tooltip):
         """extra_usage_available is True when extra-usage is enabled and credits are not exhausted."""
         self.app._last_response = {
-            'five_hour': {'utilization': 100.0},
-            'seven_day': {'utilization': 80.0},
+            'five_hour': {'utilization': 100.0, 'resets_at': ''},
+            'seven_day': {'utilization': 80.0, 'resets_at': ''},
             'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 250.0},
         }
         self.app._render_tray()
@@ -1021,7 +983,7 @@ class TestRenderTray(unittest.TestCase):
     def test_extra_usage_available_false_when_disabled(self, mock_icon, _tooltip):
         """extra_usage_available is False when the account has not enabled extra usage."""
         self.app._last_response = {
-            'five_hour': {'utilization': 100.0},
+            'five_hour': {'utilization': 100.0, 'resets_at': ''},
             'extra_usage': {'is_enabled': False, 'monthly_limit': 0, 'used_credits': 0},
         }
         self.app._render_tray()
@@ -1033,7 +995,7 @@ class TestRenderTray(unittest.TestCase):
     def test_extra_usage_available_false_when_credits_exhausted(self, mock_icon, _tooltip):
         """extra_usage_available is False when all credits have been spent."""
         self.app._last_response = {
-            'five_hour': {'utilization': 100.0},
+            'five_hour': {'utilization': 100.0, 'resets_at': ''},
             'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 1000.0},
         }
         self.app._render_tray()
@@ -1044,7 +1006,7 @@ class TestRenderTray(unittest.TestCase):
     @patch('usage_monitor_for_claude.app.create_icon_image')
     def test_extra_usage_available_false_when_no_extra_usage_key(self, mock_icon, _tooltip):
         """extra_usage_available is False when the API response omits the extra_usage object entirely."""
-        self.app._last_response = {'five_hour': {'utilization': 100.0}}
+        self.app._last_response = {'five_hour': {'utilization': 100.0, 'resets_at': ''}}
         self.app._render_tray()
 
         self.assertFalse(mock_icon.call_args.kwargs['extra_usage_available'])
@@ -1053,7 +1015,7 @@ class TestRenderTray(unittest.TestCase):
     @patch('usage_monitor_for_claude.app.create_icon_image')
     def test_extra_usage_available_false_when_extra_usage_null(self, mock_icon, _tooltip):
         """extra_usage_available is False when the extra_usage field is explicitly null."""
-        self.app._last_response = {'five_hour': {'utilization': 100.0}, 'extra_usage': None}
+        self.app._last_response = {'five_hour': {'utilization': 100.0, 'resets_at': ''}, 'extra_usage': None}
         self.app._render_tray()
 
         self.assertFalse(mock_icon.call_args.kwargs['extra_usage_available'])
@@ -1078,12 +1040,15 @@ class TestOnThemeChanged(unittest.TestCase):
     def test_theme_change_re_renders(self, _theme, mock_icon, _tooltip):
         """Theme change re-renders the tray icon."""
         self.app._light_taskbar = False
-        self.app._last_response = {'five_hour': {'utilization': 50.0}, 'seven_day': {'utilization': 20.0}}
+        self.app._last_response = {
+            'five_hour': {'utilization': 50.0, 'resets_at': ''},
+            'seven_day': {'utilization': 20.0, 'resets_at': ''},
+        }
 
         self.app._on_theme_changed()
 
         self.assertTrue(self.app._light_taskbar)
-        mock_icon.assert_called_once_with(50.0, 20.0, True, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False)
+        mock_icon.assert_called_once_with(50.0, 20.0, True, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=2)
 
     @patch('usage_monitor_for_claude.app.taskbar_uses_light_theme', return_value=False)
     def test_same_theme_no_render(self, _theme):
@@ -2361,8 +2326,8 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         self.assertEqual(self.app._next_poll_time, 1000.0 + 180)
 
 
-class TestPollLoopAccountSwitch(unittest.TestCase):
-    """Tests for the poll loop's reaction to a credentials token change."""
+class TestPollLoopAccountRevision(unittest.TestCase):
+    """Tests for poll-loop reactions to account-update notifications."""
 
     def setUp(self):
         self.app = _make_app()
@@ -2374,8 +2339,7 @@ class TestPollLoopAccountSwitch(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.app.time.sleep')
     @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
-    def test_token_change_to_other_account_forces_update(self, _mock_time, _mock_sleep):
-        """A token change confirmed as a different account triggers a forced update."""
+    def test_revision_change_to_other_account_forces_update(self, _mock_time, _mock_sleep):
         force_calls = []
 
         def update_side_effect(force=False):
@@ -2386,17 +2350,17 @@ class TestPollLoopAccountSwitch(unittest.TestCase):
         with patch.object(self.app, 'update', side_effect=update_side_effect), \
              patch.object(self.app, '_calculate_poll_interval', return_value=180), \
              patch.object(self.app, '_account_switched', return_value=True), \
+             patch.object(self.app, '_maybe_recycle_child', return_value=False), \
              patch.object(self.app, '_is_user_away', return_value=False), \
              patch.object(self.app, '_seconds_until_next_reset', return_value=None), \
-             patch('usage_monitor_for_claude.app.read_access_token', side_effect=['tok-a', 'tok-b', 'tok-b', 'tok-b']):
+             patch('usage_monitor_for_claude.app.auth_revision', side_effect=[0, 1, 1]):
             self.app.poll_loop()
 
         # First poll is the normal cadence, the second is forced by the switch.
         self.assertEqual(force_calls, [False, True])
 
     @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
-    def test_token_refresh_same_account_does_not_force(self, _mock_time):
-        """A token change that is only a refresh of the same account does not force a poll."""
+    def test_revision_change_same_account_does_not_force(self, _mock_time):
         force_calls = []
 
         def sleep_side_effect(_seconds):
@@ -2406,37 +2370,66 @@ class TestPollLoopAccountSwitch(unittest.TestCase):
         with patch.object(self.app, 'update', side_effect=lambda force=False: force_calls.append(force)), \
              patch.object(self.app, '_calculate_poll_interval', return_value=180), \
              patch.object(self.app, '_account_switched', return_value=False), \
+             patch.object(self.app, '_maybe_recycle_child', return_value=False), \
              patch.object(self.app, '_is_user_away', return_value=False), \
              patch.object(self.app, '_seconds_until_next_reset', return_value=None), \
              patch('usage_monitor_for_claude.app.time.sleep', side_effect=sleep_side_effect), \
-             patch('usage_monitor_for_claude.app.read_access_token', side_effect=['tok-a', 'tok-b', 'tok-b']):
+             patch('usage_monitor_for_claude.app.auth_revision', side_effect=[0, 1]):
             self.app.poll_loop()
 
         # Only the initial cadence poll ran; the same-account token change forced nothing.
         self.assertEqual(force_calls, [False])
 
-    @patch('usage_monitor_for_claude.app.time.sleep')
-    @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
-    def test_token_change_retries_after_auth_error(self, _mock_time, _mock_sleep):
-        """A token change while the last fetch failed auth triggers an immediate retry."""
-        self.app._last_response = {'error': 'expired', 'auth_error': True}
+    def _assert_failed_state_retries_without_force(self, failed_response):
+        self.app._last_response = failed_response
         force_calls = []
 
         def update_side_effect(force=False):
             force_calls.append(force)
             if len(force_calls) >= 2:
                 self.app.running = False
+            return True
 
         with patch.object(self.app, 'update', side_effect=update_side_effect), \
              patch.object(self.app, '_calculate_poll_interval', return_value=30), \
              patch.object(self.app, '_account_switched', return_value=False), \
+             patch.object(self.app, '_maybe_recycle_child', return_value=False), \
              patch.object(self.app, '_is_user_away', return_value=False), \
              patch.object(self.app, '_seconds_until_next_reset', return_value=None), \
-             patch('usage_monitor_for_claude.app.read_access_token', side_effect=['tok-a', 'tok-b', 'tok-b', 'tok-b']):
+             patch('usage_monitor_for_claude.app.auth_revision', side_effect=[0, 1, 1]), \
+             patch('usage_monitor_for_claude.app.time.sleep'):
             self.app.poll_loop()
-
-        # Initial error poll, then an immediate (non-forced) retry on the new token.
         self.assertEqual(force_calls, [False, False])
+
+    def test_revision_change_retries_after_auth_error(self):
+        self._assert_failed_state_retries_without_force({'error': 'expired', 'auth_error': True})
+
+    def test_revision_change_retries_after_signed_out(self):
+        self._assert_failed_state_retries_without_force({'error': 'signed out', 'no_auth': True})
+
+    @patch('usage_monitor_for_claude.app.time.sleep')
+    @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
+    def test_revision_arriving_during_update_is_not_swallowed(self, _mock_time, _mock_sleep):
+        revision = {'value': 0}
+        force_calls = []
+
+        def update_side_effect(force=False):
+            force_calls.append(force)
+            if len(force_calls) == 1:
+                revision['value'] = 1
+            else:
+                self.app.running = False
+            return True
+
+        with patch.object(self.app, 'update', side_effect=update_side_effect), \
+             patch.object(self.app, '_calculate_poll_interval', return_value=180), \
+             patch.object(self.app, '_account_switched', return_value=True), \
+             patch.object(self.app, '_maybe_recycle_child', return_value=False), \
+             patch.object(self.app, '_is_user_away', return_value=False), \
+             patch.object(self.app, '_seconds_until_next_reset', return_value=None), \
+             patch('usage_monitor_for_claude.app.auth_revision', side_effect=lambda: revision['value']):
+            self.app.poll_loop()
+        self.assertEqual(force_calls, [False, True])
 
 
 class TestIdleResetPendingCleared(unittest.TestCase):
@@ -2515,7 +2508,7 @@ class TestIdleResetPendingCleared(unittest.TestCase):
 # Account switch detection
 # ---------------------------------------------------------------------------
 
-class TestAccountSwitchDetection(unittest.TestCase):
+class TestAccountSwitchNotifications(unittest.TestCase):
     """Tests for account switch detection and notification in update()."""
 
     def setUp(self):
@@ -2663,8 +2656,8 @@ class TestAccountSwitchDetection(unittest.TestCase):
 # _account_switched (immediate switch detection)
 # ---------------------------------------------------------------------------
 
-class TestAccountSwitchDetection(unittest.TestCase):
-    """Tests for _account_switched() used by the poll loop's token watcher."""
+class TestAccountSwitchConfirmation(unittest.TestCase):
+    """Tests for the cooldown-independent account-revision confirmation."""
 
     def setUp(self):
         self.app = _make_app()
@@ -2679,7 +2672,7 @@ class TestAccountSwitchDetection(unittest.TestCase):
         self.app.cache.profile = {'account': {'uuid': 'uuid-new'}}
 
         self.assertFalse(self.app._account_switched())
-        self.app.cache.ensure_profile.assert_not_called()
+        self.app.cache.refresh_profile.assert_not_called()
 
     def test_different_uuid_returns_true(self):
         """A profile UUID differing from the baseline reports a switch."""
@@ -2702,14 +2695,19 @@ class TestAccountSwitchDetection(unittest.TestCase):
 
         self.assertFalse(self.app._account_switched())
 
-    def test_probes_profile_bypassing_backoff(self):
-        """The profile probe bypasses the rate-limit backoff so a switch is caught mid-backoff."""
+    def test_none_fingerprint_returns_false(self):
+        self.app._prev_account_uuid = 'uuid-old'
+        self.app.cache.profile = {'account': {'uuid': None, 'email': ''}}
+
+        self.assertFalse(self.app._account_switched())
+
+    def test_refreshes_profile_independently_of_usage_cooldown(self):
         self.app._prev_account_uuid = 'uuid-old'
         self.app.cache.profile = {'account': {'uuid': 'uuid-new'}}
 
         self.app._account_switched()
 
-        self.app.cache.ensure_profile.assert_called_once_with(bypass_rate_limit=True)
+        self.app.cache.refresh_profile.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -3115,6 +3113,184 @@ class TestInstallDoubleClickHandler(unittest.TestCase):
         self.assertEqual(fake_icon._message_handlers[0x40B], self.app._on_tray_message)
         self.assertIs(fake_icon._message_handlers[0x0002], other_handler)
         self.assertIs(self.app._pystray_on_notify, original_notify)
+
+
+class TestCodexStartupWarning(unittest.TestCase):
+    def setUp(self):
+        self.app = _make_app()
+
+    def tearDown(self):
+        _cleanup(self.app)
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_status_image')
+    def test_signed_out_response_notifies_once(self, _status, _tooltip):
+        self.app.cache = MagicMock()
+        self.app.cache.update.return_value = UpdateResult(data={'error': 'signed out', 'no_auth': True})
+
+        self.assertTrue(self.app.update())
+        self.assertTrue(self.app.update())
+
+        self.app.icon.notify.assert_called_once()
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_success_rearms_signed_out_notification(self, _icon, _tooltip):
+        self.app.cache = MagicMock()
+        self.app.cache.update.side_effect = [
+            UpdateResult(data={'error': 'signed out', 'no_auth': True}),
+            UpdateResult(data={'seven_day': {'utilization': 25.0, 'resets_at': ''}}),
+            UpdateResult(data={'error': 'signed out', 'no_auth': True}),
+        ]
+
+        self.app.update()
+        self.app.update()
+        self.app.update()
+
+        self.assertEqual(self.app.icon.notify.call_count, 2)
+
+
+class TestScheduledErrorStateRecycle(unittest.TestCase):
+    def setUp(self):
+        self.app = _make_app()
+        self.app.cache = MagicMock()
+        self.app.cache.last_success_time = 0.0
+
+    def tearDown(self):
+        _cleanup(self.app)
+
+    def test_child_recycled_every_tenth_error_cadence_poll(self):
+        self.app._last_response = {'error': 'expired', 'auth_error': True}
+        with patch('usage_monitor_for_claude.app.restart_child') as restart:
+            for _ in range(20):
+                self.assertTrue(self.app._maybe_recycle_child())
+        self.assertEqual(restart.call_count, 2)
+
+    def test_streak_resets_on_success(self):
+        self.app._last_response = {'error': 'signed out', 'no_auth': True}
+        with patch('usage_monitor_for_claude.app.restart_child') as restart:
+            for _ in range(9):
+                self.app._maybe_recycle_child()
+            self.app._last_response = {'five_hour': {'utilization': 1, 'resets_at': ''}}
+            self.app._maybe_recycle_child()
+            self.app._last_response = {'error': 'signed out', 'no_auth': True}
+            for _ in range(9):
+                self.app._maybe_recycle_child()
+        restart.assert_not_called()
+
+    def test_popup_updates_never_advance_counter(self):
+        self.app.cache.update.return_value = UpdateResult(data={'error': 'expired', 'auth_error': True})
+        with patch('usage_monitor_for_claude.app.restart_child') as restart, \
+             patch.object(self.app, '_render_tray'):
+            for _ in range(30):
+                self.app.update()
+        self.assertEqual(self.app._auth_error_streak, 0)
+        restart.assert_not_called()
+
+    @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
+    def test_tenth_scheduled_poll_restarts_before_update(self, _mock_time):
+        self.app._last_response = {'error': 'signed out', 'no_auth': True}
+        self.app._auth_error_streak = 9
+        events = []
+
+        def update_side_effect(force=False):
+            events.append('update')
+            self.app.running = False
+            return True
+
+        with patch('usage_monitor_for_claude.app.restart_child', side_effect=lambda: events.append('restart')), \
+             patch.object(self.app, 'update', side_effect=update_side_effect), \
+             patch('usage_monitor_for_claude.app.auth_revision', return_value=0):
+            self.app.poll_loop()
+        self.assertEqual(events, ['restart', 'update'])
+
+    @patch('usage_monitor_for_claude.app.time.time', return_value=100.0)
+    def test_skipped_scheduled_update_does_not_advance_counter(self, _mock_time):
+        self.app._last_response = {'error': 'signed out', 'no_auth': True}
+
+        def skipped_update(force=False):
+            self.app.running = False
+            return False
+
+        with patch.object(self.app, 'update', side_effect=skipped_update), \
+             patch('usage_monitor_for_claude.app.auth_revision', return_value=0), \
+             patch('usage_monitor_for_claude.app.restart_child') as restart:
+            self.app.poll_loop()
+        self.assertEqual(self.app._auth_error_streak, 0)
+        restart.assert_not_called()
+
+
+class TestCodexTraySubstitution(unittest.TestCase):
+    def setUp(self):
+        self.app = _make_app()
+
+    def tearDown(self):
+        _cleanup(self.app)
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_weekly_only_renders_weekly_on_top(self, create, _tooltip):
+        self.app._last_response = {'seven_day': {'utilization': 29, 'resets_at': ''}}
+        self.app._render_tray()
+        args, kwargs = create.call_args
+        self.assertEqual(args[0], 29)
+        self.assertEqual(args[1], 0)
+        self.assertEqual(kwargs['bar_count'], 1)
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_two_available_limits_render_two_bars(self, create, _tooltip):
+        self.app._last_response = {
+            'five_hour': {'utilization': 12, 'resets_at': ''},
+            'seven_day': {'utilization': 34, 'resets_at': ''},
+        }
+        self.app._render_tray()
+        self.assertEqual(create.call_args.kwargs['bar_count'], 2)
+
+
+class TestCodexCliAutoUpdate(unittest.TestCase):
+    def setUp(self):
+        self.app = _make_app()
+
+    def tearDown(self):
+        _cleanup(self.app)
+
+    def test_updated_cli_notifies_once_and_respects_interval(self):
+        result = CliUpdateResult(True, True, '0.140.0', '0.144.5', '')
+        with patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', True), \
+             patch('usage_monitor_for_claude.app.CODEX_UPDATE_INTERVAL', 3600), \
+             patch.object(self.app.cache, 'update_codex_cli', return_value=result) as update:
+            self.app._maybe_update_codex_cli(now=100)
+            self.app._maybe_update_codex_cli(now=200)
+
+        update.assert_called_once()
+        self.app.icon.notify.assert_called_once_with(
+            'Codex CLI was updated from 0.140.0 to 0.144.5.',
+            'Codex CLI Updated',
+        )
+
+    def test_up_to_date_cli_does_not_notify(self):
+        result = CliUpdateResult(True, False, '0.144.5', '0.144.5', '')
+        with patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', True), \
+             patch.object(self.app.cache, 'update_codex_cli', return_value=result):
+            self.app._maybe_update_codex_cli(now=100)
+        self.app.icon.notify.assert_not_called()
+
+    def test_failed_check_does_not_retry_until_interval(self):
+        result = CliUpdateResult(False, False, '0.140.0', '0.140.0', 'Timeout')
+        with patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', True), \
+             patch('usage_monitor_for_claude.app.CODEX_UPDATE_INTERVAL', 3600), \
+             patch.object(self.app.cache, 'update_codex_cli', return_value=result) as update:
+            self.app._maybe_update_codex_cli(now=100)
+            self.app._maybe_update_codex_cli(now=200)
+        update.assert_called_once()
+        self.app.icon.notify.assert_not_called()
+
+    def test_disabled_auto_update_never_runs(self):
+        with patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', False), \
+             patch.object(self.app.cache, 'update_codex_cli') as update:
+            self.app._maybe_update_codex_cli(now=100)
+        update.assert_not_called()
 
 
 if __name__ == '__main__':

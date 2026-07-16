@@ -18,11 +18,23 @@ dist/
 .vscode/
 .idea/
 
+# Machine-specific agent instructions
+AGENTS.local.md
+
 # Claude Code
 .claude/settings.json
 
 # User settings
 usage-monitor-settings.json
+usage-monitor-for-codex-settings.json
+
+# Runtime logs
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
 
 # OS
 Thumbs.db

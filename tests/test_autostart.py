@@ -184,7 +184,7 @@ class TestCustomConfigDirAutostart(unittest.TestCase):
     def setUp(self):
         patcher_suffix = patch.object(autostart_mod, 'config_dir_suffix', return_value='_abc123def456')
         patcher_default = patch.object(autostart_mod, 'is_default_config_dir', return_value=False)
-        patcher_env = patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': r'C:\Users\test\.claude-second'})
+        patcher_env = patch.dict('os.environ', {'CODEX_HOME': r'C:\Users\test\.codex-second'})
         patcher_suffix.start()
         patcher_default.start()
         patcher_env.start()
@@ -202,11 +202,11 @@ class TestCustomConfigDirAutostart(unittest.TestCase):
         autostart_mod.set_autostart(True)
 
         name = mock_winreg.SetValueEx.call_args[0][1]
-        self.assertEqual(name, 'UsageMonitorForClaude_abc123def456')
+        self.assertEqual(name, 'UsageMonitorForCodex_abc123def456')
 
     @patch.object(autostart_mod, 'winreg')
     def test_enable_command_includes_config_dir(self, mock_winreg):
-        """Stored command carries --config-dir so autostart targets the right account."""
+        """Stored command carries --codex-home so autostart targets the right account."""
         mock_key = MagicMock()
         mock_winreg.OpenKey.return_value.__enter__ = MagicMock(return_value=mock_key)
         mock_winreg.OpenKey.return_value.__exit__ = MagicMock(return_value=False)
@@ -214,7 +214,7 @@ class TestCustomConfigDirAutostart(unittest.TestCase):
         autostart_mod.set_autostart(True)
 
         command = mock_winreg.SetValueEx.call_args[0][4]
-        self.assertEqual(command, f'"{sys.executable}" --config-dir="C:\\Users\\test\\.claude-second"')
+        self.assertEqual(command, f'"{sys.executable}" --codex-home="C:\\Users\\test\\.codex-second"')
 
     @patch.object(autostart_mod, 'winreg')
     def test_disable_deletes_suffixed_value(self, mock_winreg):
@@ -225,16 +225,16 @@ class TestCustomConfigDirAutostart(unittest.TestCase):
 
         autostart_mod.set_autostart(False)
 
-        mock_winreg.DeleteValue.assert_called_once_with(mock_key, 'UsageMonitorForClaude_abc123def456')
+        mock_winreg.DeleteValue.assert_called_once_with(mock_key, 'UsageMonitorForCodex_abc123def456')
 
     @patch.object(autostart_mod, 'set_autostart')
     @patch.object(autostart_mod, 'winreg')
     def test_sync_skips_when_command_matches(self, mock_winreg, mock_set):
-        """sync_autostart_path() compares against the command including --config-dir."""
+        """sync_autostart_path() compares against the command including --codex-home."""
         mock_key = MagicMock()
         mock_winreg.OpenKey.return_value.__enter__ = MagicMock(return_value=mock_key)
         mock_winreg.OpenKey.return_value.__exit__ = MagicMock(return_value=False)
-        stored = f'"{sys.executable}" --config-dir="C:\\Users\\test\\.claude-second"'
+        stored = f'"{sys.executable}" --codex-home="C:\\Users\\test\\.codex-second"'
         mock_winreg.QueryValueEx.return_value = (stored, 1)
 
         autostart_mod.sync_autostart_path()
@@ -244,7 +244,7 @@ class TestCustomConfigDirAutostart(unittest.TestCase):
     @patch.object(autostart_mod, 'set_autostart')
     @patch.object(autostart_mod, 'winreg')
     def test_sync_updates_when_flag_missing(self, mock_winreg, mock_set):
-        """A stored command without --config-dir is rewritten."""
+        """A stored command without --codex-home is rewritten."""
         mock_key = MagicMock()
         mock_winreg.OpenKey.return_value.__enter__ = MagicMock(return_value=mock_key)
         mock_winreg.OpenKey.return_value.__exit__ = MagicMock(return_value=False)

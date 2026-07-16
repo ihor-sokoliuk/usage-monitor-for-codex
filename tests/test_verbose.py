@@ -11,7 +11,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.verbose import (
-    _credentials_status,
     _dotnet_version,
     _dpi_info,
     _package_version,
@@ -21,6 +20,7 @@ from usage_monitor_for_claude.verbose import (
     _section,
     _webview2_version,
     print_runtime_diagnostics,
+    capture_diagnostics,
     print_startup_diagnostics,
     setup_console,
 )
@@ -281,48 +281,6 @@ class TestScreenInfo(unittest.TestCase):
         self.assertEqual(work_area, 'unavailable')
 
 
-class TestCredentialsStatus(unittest.TestCase):
-    """Tests for _credentials_status()."""
-
-    def test_found(self):
-        """Reports 'found' with path when credentials file exists."""
-        with patch('usage_monitor_for_claude.verbose.Path') as mock_path, \
-             patch.dict('os.environ', {}, clear=False):
-            env = {k: v for k, v in __import__('os').environ.items() if k != 'CLAUDE_CONFIG_DIR'}
-            with patch.dict('os.environ', env, clear=True):
-                mock_home = MagicMock()
-                mock_path.home.return_value = mock_home
-                cred_path = mock_home / '.claude' / '.credentials.json'
-                cred_path.exists.return_value = True
-                result = _credentials_status()
-        self.assertTrue(result.startswith('found'))
-
-    def test_not_found(self):
-        """Reports 'NOT FOUND' with path when credentials file is missing."""
-        with patch('usage_monitor_for_claude.verbose.Path') as mock_path, \
-             patch.dict('os.environ', {}, clear=False):
-            env = {k: v for k, v in __import__('os').environ.items() if k != 'CLAUDE_CONFIG_DIR'}
-            with patch.dict('os.environ', env, clear=True):
-                mock_home = MagicMock()
-                mock_path.home.return_value = mock_home
-                cred_path = mock_home / '.claude' / '.credentials.json'
-                cred_path.exists.return_value = False
-                result = _credentials_status()
-        self.assertTrue(result.startswith('NOT FOUND'))
-
-    def test_custom_config_dir(self):
-        """Respects CLAUDE_CONFIG_DIR environment variable."""
-        with patch('usage_monitor_for_claude.verbose.Path') as mock_path, \
-             patch.dict('os.environ', {'CLAUDE_CONFIG_DIR': 'D:\\custom'}):
-            custom_path = MagicMock()
-            mock_path.return_value = custom_path
-            cred_path = custom_path / '.credentials.json'
-            cred_path.exists.return_value = True
-            result = _credentials_status()
-        mock_path.assert_called_with('D:\\custom')
-        self.assertTrue(result.startswith('found'))
-
-
 class TestSetupConsole(unittest.TestCase):
     """Tests for setup_console()."""
 
@@ -386,9 +344,13 @@ class TestPrintStartupDiagnostics(unittest.TestCase):
             print_startup_diagnostics()
 
         output = buf.getvalue()
-        for section in ('System', 'Python', 'Locale', 'Display', 'Runtimes', 'Dependencies', 'Credentials'):
+        for section in ('System', 'Python', 'Locale', 'Display', 'Runtimes', 'Dependencies'):
             with self.subTest(section=section):
                 self.assertIn(section, output)
+        self.assertIn('CODEX_HOME', output)
+        self.assertNotIn('auth.json', output.lower())
+        self.assertNotIn('credentials', output.lower())
+        self.assertNotIn('CLAUDE_CONFIG_DIR', output)
 
     def test_contains_version(self):
         """Output includes the app version."""
@@ -414,6 +376,20 @@ class TestPrintStartupDiagnostics(unittest.TestCase):
 
         from usage_monitor_for_claude import __version__
         self.assertIn(__version__, buf.getvalue())
+
+
+class TestCaptureDiagnostics(unittest.TestCase):
+    def test_returns_printed_diagnostics_without_writing_stdout(self):
+        outer = io.StringIO()
+
+        def diagnostic() -> None:
+            print('sanitized diagnostic')
+
+        with patch('sys.stdout', outer):
+            captured = capture_diagnostics(diagnostic)
+
+        self.assertEqual(captured, 'sanitized diagnostic\n')
+        self.assertEqual(outer.getvalue(), '')
 
 
 class TestPrintRuntimeDiagnostics(unittest.TestCase):

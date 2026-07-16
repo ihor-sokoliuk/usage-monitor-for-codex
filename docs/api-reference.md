@@ -1,74 +1,57 @@
-# API Reference
+# Codex app-server reference
 
-Example responses from the Anthropic OAuth API endpoints used by the app. These serve as implementation reference - field names, data types, and structure.
+The monitor reads provider data from a local `codex app-server` child. The protocol uses JSON-RPC 2.0 semantics over newline-delimited JSON, with the `"jsonrpc": "2.0"` member omitted on the wire.
 
-> [!NOTE]
-> These are real-world examples with anonymized data, captured in March 2026. Fields may change without notice as these are undocumented internal endpoints. If your API response contains fields not listed here, please open an issue with an anonymized example so we can keep this reference up to date.
+`codex app-server` is an experimental Codex interface. The monitor treats unknown errors as transient and reports method-not-found on required account methods as an outdated Codex CLI.
 
-## /api/oauth/usage
+## Methods used
 
-```
-https://api.anthropic.com/api/oauth/usage
-```
+| Method | Purpose | Monitor behavior |
+|---|---|---|
+| `initialize` / `initialized` | Start the connection | Declares no optional capabilities |
+| `account/read` | Read auth mode, email, and plan | Normally sends `refreshToken: false`; one recovery-enabled read per continuous failing episode may send `true` |
+| `account/rateLimits/read` | Read usage windows | Maps percent used, optional duration, and optional reset time into UI quota fields |
 
-```json
-{
-  "five_hour": {
-    "utilization": 48.0,
-    "resets_at": "2026-03-02T11:00:00.521744+00:00"
-  },
-  "seven_day": {
-    "utilization": 64.0,
-    "resets_at": "2026-03-06T06:00:00.521764+00:00"
-  },
-  "seven_day_oauth_apps": null,
-  "seven_day_opus": null,
-  "seven_day_sonnet": {
-    "utilization": 2.0,
-    "resets_at": "2026-03-06T07:00:00.521773+00:00"
-  },
-  "seven_day_cowork": null,
-  "iguana_necktie": null,
-  "extra_usage": {
-    "is_enabled": true,
-    "monthly_limit": 1000,
-    "used_credits": 0.0,
-    "utilization": null
-  }
-}
-```
+The normal poll performs one account read followed by one rate-limit read as a single logical provider operation. A child restart never mixes responses from different child generations.
 
-## /api/oauth/profile
+## Notifications and server requests
 
-```
-https://api.anthropic.com/api/oauth/profile
-```
+`account/updated` increments a monotonic authentication revision. The poll loop uses a revision change as an early account re-check hint; periodic polling remains authoritative.
 
-```json
-{
-  "account": {
-    "uuid": "...",
-    "full_name": "Max Clau",
-    "display_name": "Max",
-    "email": "max@clau.de",
-    "has_claude_max": true,
-    "has_claude_pro": false,
-    "created_at": "2024-10-22T07:21:47.099776Z"
-  },
-  "organization": {
-    "uuid": "...",
-    "name": "max@clau.de's Organization",
-    "organization_type": "claude_max",
-    "billing_type": "stripe_subscription",
-    "rate_limit_tier": "default_claude_max_5x",
-    "has_extra_usage_enabled": true,
-    "subscription_status": "active",
-    "subscription_created_at": "2026-01-16T18:22:42.826732Z"
-  },
-  "application": {
-    "uuid": "...",
-    "name": "Claude Code",
-    "slug": "claude-code"
-  }
-}
-```
+Other notifications are ignored. An unexpected server-initiated request receives a method-not-found response so neither side waits indefinitely.
+
+## Rate-limit source selection
+
+The response can provide a compatibility snapshot in `rateLimits` and keyed buckets in `rateLimitsByLimitId`.
+
+- A non-empty `rateLimitsByLimitId` mapping is normalized by itself, in sorted limit-ID order.
+- Otherwise the monitor uses the snapshot's `primary` then `secondary` window.
+- The two sources are never merged.
+- Null windows are skipped.
+- Credits metadata is ignored in v1.
+
+Each window uses `usedPercent` directly as percent consumed. `resetsAt` is a Unix timestamp converted to an aware ISO-8601 value; a missing reset becomes an empty string. `windowDurationMins` is optional.
+
+## Field naming
+
+Known duration names use number words where available:
+
+| Minutes | Field |
+|---:|---|
+| 90 | `90_minute` |
+| 300 | `five_hour` |
+| 780 | `13_hour` |
+| 10080 | `seven_day` |
+| 43200 | `30_day` |
+
+For keyed buckets, a non-`codex` limit ID is sanitized and appended to a duration name, for example `seven_day_gpt_5_pro`. A keyed window without a duration uses the sanitized limit ID alone; an empty sanitized suffix falls back to `limit` or `<period>_limit`.
+
+For snapshot windows, a missing duration falls back to its `primary` or `secondary` slot name. That fallback is deliberately displayable but unparseable, so it has a label and percentage without a time marker or dividers.
+
+Names are collision-proof within the selected source. A duplicate snapshot name gains a slot suffix such as `_secondary`; duplicate keyed names gain `_2`, `_3`, and so on.
+
+## Account states
+
+ChatGPT authentication supplies the plan usage displayed by this monitor. Signed-out, API-key, Amazon Bedrock, and method-not-found states are classified separately. Unknown app-server error codes remain transient unless live wire evidence establishes an exact authentication-error predicate.
+
+The monitor never reads `auth.json`, an OS keyring, or credential-store metadata. All account state comes from `account/read`.

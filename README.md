@@ -1,223 +1,156 @@
-# Usage Monitor for Claude
+# Usage Monitor for Codex
 
-[![Feature Ideas](https://img.shields.io/badge/Feature_Ideas-Vote_%26_Discuss-blue?style=for-the-badge&logo=github)](https://github.com/jens-duttke/usage-monitor-for-claude/discussions/categories/ideas)
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ff69b4?style=for-the-badge&logo=github)](https://github.com/sponsors/jens-duttke)
+**Monitor your Codex rate limits in real time - right from your Windows system tray.**
 
-**Monitor your Claude rate limits in real time - right from your Windows system tray.**
+Usage Monitor for Codex is a lightweight, portable Windows tray app. It reads ChatGPT plan-usage windows from a local `codex app-server` child process and presents them using the notifications, popup, configurable bars, reset countdowns, and adaptive polling of the upstream Claude monitor.
 
-A native Windows tray app that shows your Claude usage at a glance - lightweight, portable, and fully auditable. Rate limits are shared across claude.ai, Claude Code, Claude Code Cowork, and IDE extensions for VS Code and JetBrains - always know how much of your session and weekly limits (Sonnet, Opus, Fable, Cowork, and any future quota types) you have left.
-
-![Detail popup showing account info and usage bars](screenshot.png)
-
-> [!TIP]
-> **Companion tool: [Agent Monitor for Claude](https://github.com/jens-duttke/agent-monitor-for-claude)**
->
-> Usage Monitor for Claude tells you *how much* of your rate limits you have left. Its companion tool, [**Agent Monitor for Claude**](https://github.com/jens-duttke/agent-monitor-for-claude), tells you *what your agents are actually doing* - a live overview of every running Claude Code agent across all your projects: which ones are working, waiting for your input, blocked, finished, or errored, refreshed every few seconds. Agents are grouped by project with the ones that need attention floated to the top, each with its estimated cost, token breakdown, model, and host - and one click brings any agent's window to the foreground. If you run more than one agent at a time, it turns "which window was that again?" into a glance at the tray.
->
-> You can even [launch it with a double-click on the tray icon](docs/event-commands.md#launch-agent-monitor-for-claude-on-double-click).
+![Usage Monitor for Codex detail popup showing account information and rate-limit usage](screenshot.png)
 
 ## Features
 
-- **Portable** - single EXE (~12.5 MB), no installation, no Electron, no runtime required. Download, place anywhere, run. To uninstall, delete the file
-- **Zero configuration** - authenticates through your existing Claude Code login, no API key or manual token entry needed
-- **Live tray icon** with two [configurable](docs/configuration.md#tray-icon-bars) progress bars (session + weekly by default), [configurable tooltip](docs/configuration.md#tooltip-fields), percentage display, and theme-aware colors for light and dark taskbars
-- **Detail popup** (left-click) showing account info, dynamically detected usage bars for all active quota types (Session, Weekly, Sonnet, Opus, Fable, Cowork, and any new quotas Anthropic adds) with [configurable field selection](docs/configuration.md#popup-fields), extra usage, reset countdowns, and a stale-data indicator when values may be outdated; pin it open and move it while pinned to keep usage details visible during long sessions, and [configure a compact pinned view](docs/configuration.md#compact-pinned-view) that hides the sections and bars you do not need. Reset times follow your Windows 24-hour or 12-hour clock format automatically
-- **Claude Code versions** - the popup shows which version is installed in each environment (native CLI, VS Code, Cursor, Windsurf), making it easy to spot when your IDE extension is ahead of or behind the CLI
-- **Smart alerts** - configurable threshold notifications per quota type, with time-aware mode that only alerts when usage outpaces elapsed time. Reset notifications when a nearly exhausted quota refills
-- **[Event commands](docs/event-commands.md)** - run a custom shell command when a quota resets, a usage threshold is crossed, the app starts up, or you double-click the tray icon. Send push notifications to your phone, resume an AI agent, start a fresh 5-hour session automatically, play an alert sound, launch a companion tool like [Agent Monitor for Claude](https://github.com/jens-duttke/agent-monitor-for-claude) on double-click, or trigger any custom workflow
-- **Time marker** on each bar showing elapsed time in the current period - in the detail popup and on the tray icon bars - so you can instantly see whether your usage is ahead of or behind the clock; bars that outpace the clock turn red, in the popup and tray alike
-- **Automatic token refresh** - when the OAuth session expires, runs `claude update` in the background to renew the token without user intervention. If a CLI update is installed, shows a notification (which you can turn off via the `notify_claude_update` setting)
-- **Adaptive polling** - speeds up during active usage, pauses when the computer is idle or locked, aligns to imminent quota resets, and backs off on rate-limit errors. Switching your Claude account refreshes the tray immediately, so it never lingers on the previous account's usage
-- **Multi-account** - monitor several Claude accounts side by side: launch one instance per account with `--config-dir="<path>"` pointing at each account's Claude config directory. Each tray icon shows its account's usage, with a `[dir-name]` tooltip prefix, per-instance settings, and its own autostart entry
-- **13 languages** (English, German, French, Spanish, Portuguese, Italian, Japanese, Korean, Hindi, Indonesian, Chinese Simplified, Chinese Traditional, Ukrainian) - auto-detected from your Windows display language, with optional manual override via the `language` setting
-- **[Customizable](docs/configuration.md)** - optionally override polling intervals, colors, alert thresholds, and more via a JSON settings file
+- **Portable** - a single Windows EXE with no installer and no Python runtime required
+- **Zero configuration for one account** - uses your existing Codex ChatGPT sign-in; the local app-server handles authentication and the monitor never reads a credential store
+- **Live tray icon** - up to two configurable progress bars, with only available quotas drawn, plus a configurable tooltip, percentage display, automatic substitution when a configured window is absent, and theme-aware colors
+- **Detail popup** - account email and plan plus every active usage window, including model-scoped limits and unusual durations; reset countdowns follow your Windows 12-hour or 24-hour clock setting
+- **Codex versions** - reports the native CLI and `openai.chatgpt` extensions found in VS Code, Cursor, and Windsurf
+- **Automatic Codex CLI updates** - runs the official self-updater at startup and daily by default, then notifies only when the installed version changes
+- **Smart alerts** - configurable percentage thresholds, time-aware pace alerts, and reset notifications
+- **[Event commands](docs/event-commands.md)** - opt-in shell commands on reset, threshold, startup, or tray double-click events
+- **Time markers** - compare elapsed time with usage in the popup and tray; bars turn red when usage is ahead of pace
+- **Automatic session recovery** - on an authentication error, asks the app-server to refresh once per continuous failure episode and observes a later sign-in without reading credential files
+- **Adaptive polling** - speeds up while usage changes, pauses when Windows is idle or locked, aligns to resets, recycles persistent signed-out/auth-failure children, and refreshes healthy children on a bounded TTL
+- **Multi-account** - one monitor per Codex home via `--codex-home`, with the credential-store requirement described below
+- **13 languages** - English, German, French, Spanish, Portuguese, Italian, Japanese, Korean, Hindi, Indonesian, Simplified Chinese, Traditional Chinese, and Ukrainian
+- **[Customizable](docs/configuration.md)** - polling, CLI updates, rotating logs, colors, alert thresholds, displayed fields, compact pinned mode, and event commands
 
----
+## Security and transparency
 
-## Security & Transparency
+The monitor is intentionally small and auditable:
 
-This tool handles your Claude Code OAuth token, so you should be able to verify it is safe. The codebase is deliberately structured for easy auditing:
+- **No provider HTTP client** - the built-in monitor makes no outbound provider/API request. Account and usage data crosses local stdio to a spawned `codex app-server`; that external Codex process performs network activity and may update its own state according to your Codex configuration
+- **Credentials never touched** - monitor code does not construct or inspect a credential-file/keyring location and never reads credential contents, existence, timestamps, or other metadata. Authentication state comes only from `account/read`
+- **Provider boundary isolated** - JSONL transport is in [`app_server.py`](usage_monitor_for_claude/app_server.py) and response normalization/classification is in [`api.py`](usage_monitor_for_claude/api.py)
+- **Sanitized rotating diagnostics** - raw provider responses remain in memory; each instance writes an independent rotating log beside the EXE without tokens, email addresses, credential data, or raw payloads
+- **No hidden Python execution or obfuscation** - no `eval()`, `exec()`, `compile()`, dynamic imports, encoded endpoints, or minified application logic
+- **Minimal runtime dependencies** - [Pillow](https://pypi.org/project/Pillow/), [pystray](https://pypi.org/project/pystray/), and [pywebview](https://pypi.org/project/pywebview/)
 
-- **Single network destination** - communicates exclusively with `api.anthropic.com`, no other hosts
-- **Credentials stay local** - the OAuth token is used only in HTTP Authorization headers, never logged, stored elsewhere, or transmitted to third parties
-- **Read-only** - the app never writes files to disk
-- **No dynamic code execution** - no `eval()`, `exec()`, `compile()`, or dynamic imports
-- **No obfuscation** - no encoded strings, no hidden URLs, no minified logic
-- **Modular architecture** - small, focused modules with security-critical code (credentials, API calls) isolated in a single file ([`api.py`](usage_monitor_for_claude/api.py))
-- **Minimal runtime dependencies** - only four well-known packages: [requests](https://pypi.org/project/requests/), [Pillow](https://pypi.org/project/pillow/), [pystray](https://pypi.org/project/pystray/), [pywebview](https://pypi.org/project/pywebview/)
+Three boundaries are deliberate: pywebview/WebView2 may use local loopback or runtime caches internally; the automatic updater invokes the installed `codex update`, which may use the network and replace Codex installation files; and enabling **Start with Windows** writes the monitor's value under the current user's Windows Run registry key. User-configured event commands run separately with the monitor's privileges and may read, write, launch programs, or use the network exactly as their command requests.
 
----
+See [PRIVACY.md](PRIVACY.md) for the complete data-flow statement.
 
 ## Requirements
 
-- **Windows 10 or Windows 11** (64-bit)
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** installed and logged in (CLI, VS Code extension, or JetBrains plugin - any variant works). The app reads the OAuth token that Claude Code stores locally (`~/.claude/.credentials.json`). If you have `CLAUDE_CONFIG_DIR` set, the app uses that directory instead, and the `--config-dir="<path>"` command-line parameter overrides both - useful to run one instance per Claude account (log each extra account in via Claude Code with `CLAUDE_CONFIG_DIR` pointing to its own directory first).
+- Windows 10 or Windows 11, 64-bit
+- A current [Codex CLI](https://github.com/openai/codex) installed as a native Windows command
+- A ChatGPT-authenticated Codex session; run `codex login` and use the browser sign-in flow
 
-> [!TIP]
-> If the token expires, the app automatically runs `claude update` to refresh it. If the token is missing entirely, the app shows a notification and a "!" icon - log in to Claude Code and the monitor picks it up automatically.
+The monitor displays ChatGPT plan usage. An API-key or Amazon Bedrock Codex authentication can be valid for Codex while still having no ChatGPT plan usage to display; the monitor reports that state explicitly. If `account/read` or `account/rateLimits/read` is unavailable, update the Codex CLI.
 
----
+## Quick start
 
-## Quick Start
+Download `UsageMonitorForCodex.exe` from the fork's [latest release](https://github.com/ihor-sokoliuk/usage-monitor-for-codex/releases/latest), place it in its own folder, and run it. If the tray shows `!`, run `codex login` with ChatGPT sign-in and let the next poll observe the session.
 
-**No Python required.** Download the latest [**UsageMonitorForClaude.exe**](https://github.com/jens-duttke/usage-monitor-for-claude/releases/latest), place it wherever you like, and run it. To remove, disable "Start with Windows" in the context menu first (if enabled), then delete the file.
+The default instance immediately creates `usage-monitor-for-codex.log` beside the EXE and rotates it automatically. Custom `--codex-home` instances add a stable, non-identifying hash suffix so simultaneous accounts never share a log file. To remove the app, first disable **Start with Windows** from its context menu, quit it, and delete the EXE, rotated logs, and any settings file you created.
 
----
+## How to use
 
-## How to Use
-
-| Action | What happens |
+| Action | Result |
 |---|---|
-| **Hover** over the tray icon | Tooltip shows 5h and 7d usage percentages with reset times |
-| **Left-click** the tray icon | Opens the detail popup with account info and all usage bars |
-| **Double-click** the tray icon | Runs the [`on_double_click_command`](docs/event-commands.md) if configured (e.g. launch [Agent Monitor for Claude](https://github.com/jens-duttke/agent-monitor-for-claude)); otherwise does nothing |
-| **Right-click** the tray icon | Context menu: open popup, autostart toggle, test event commands, restart, GitHub link, or quit |
-| **Escape** or click outside | Closes the detail popup |
+| Hover | Shows configured usage windows and reset times |
+| Left-click | Opens the detail popup |
+| Double-click | Runs `on_double_click_command` when configured; otherwise does nothing |
+| Right-click | Opens popup, autostart, event-command tests, restart, project link, and quit actions |
+| Escape or click outside | Closes an unpinned popup |
 
-### Tray icon not visible?
+Windows may initially hide a new tray icon. In Windows taskbar settings, enable **UsageMonitorForCodex** under the system-tray icon list.
 
-Windows may hide new tray icons by default. To keep the icon always visible:
+Each usage bar can show a fill percentage, elapsed-time marker, period dividers, and reset countdown. A duration-less window remains displayable, but has no time marker or dividers because its period is unknown.
 
-1. Right-click the **taskbar** → **Taskbar settings**
-2. Expand **Other system tray icons** (Win 11) or **Select which icons appear on the taskbar** (Win 10)
-3. Toggle **UsageMonitorForClaude** to **On**
+## Run beside the Claude monitor
 
-### Reading the progress bars
+The Codex port has a separate executable name, mutex, process mapping, tray identity, autostart value, settings filename, and icon. The recommended layout is:
 
-Each bar in the detail popup has up to four visual elements:
+```text
+C:\Tools\UsageMonitorForClaude\UsageMonitorForClaude.exe
+C:\Tools\UsageMonitorForCodex\UsageMonitorForCodex.exe
+```
 
-1. **Blue fill** - how much of the limit you have used
-2. **Time dividers** - subtle gaps splitting the session bar into equal hour sections and marking local midnights on the weekly bars, visually grouping usage into hour and day segments
-3. **White vertical line** - how much *time* has passed in the current period. The fill turns **red** when it passes this marker, warning that you may hit the limit before the period resets.
-4. **Reset text** - when the limit resets, shown as a countdown with clock time
-
----
+Download the Claude executable only from the [upstream Claude monitor releases](https://github.com/jens-duttke/usage-monitor-for-claude/releases). Both monitors can run and start with Windows independently. Keep their settings files in their respective folders and smoke-test both after importing any upstream UI change.
 
 ## Configuration
 
-All settings work out of the box - no configuration file is needed. To customize behavior, create a file called `usage-monitor-settings.json` with only the keys you want to change:
+Create `usage-monitor-for-codex-settings.json` with only the keys you want to override. The first existing file wins:
 
-```json
-{
-  "poll_interval": 180,
-  "bar_fg": "#00cc66",
-  "bar_fg_warn": "#ff6600"
-}
-```
+1. A custom Codex home selected by `--codex-home` or `CODEX_HOME`, when it differs from `~/.codex`
+2. Next to the EXE, or the repository root when running from source
+3. `~/.codex/usage-monitor-for-codex-settings.json`
 
-The app searches for this file in these locations (first match wins):
+The monitor never creates or modifies this file. See [Configuration](docs/configuration.md) for every active setting and field-naming behavior.
 
-1. **`$CLAUDE_CONFIG_DIR/usage-monitor-settings.json`** (when a custom config directory is set via `--config-dir` or `CLAUDE_CONFIG_DIR`) - so each instance can have its own settings
-2. **Next to the EXE** (or project root when running from source)
-3. **`~/.claude/usage-monitor-settings.json`**
+### Multiple Codex accounts
 
-The app never creates or modifies this file. See [Configuration](docs/configuration.md) for all available settings (alert thresholds, polling intervals, colors, language, and more).
+`--codex-home` isolates settings and child state, but it does not by itself guarantee account isolation when credentials live in a shared OS keyring. For each account:
 
----
+1. Create a distinct Codex home.
+2. Put `cli_auth_credentials_store = "file"` in that home's `config.toml` before login.
+3. Run `codex login` with `CODEX_HOME` set to that directory and use ChatGPT sign-in.
+4. Start one monitor with `--codex-home="<path>"`.
 
-## Building from Source
+Keyring isolation, including `auto` when it resolves to keyring, is not verified for multi-account monitoring. See the complete [PowerShell walkthrough](docs/configuration.md#multiple-codex-accounts).
 
-<details>
-<summary>For developers who want to build the EXE themselves</summary>
+## Building from source
 
-### Prerequisites
+Build and test with native Windows Python from an NTFS clone. Do not run the build or Win32 tests from WSL or a `\\wsl.localhost` UNC path. Commands below assume the shell starts in the directory where you want the repository folder created.
 
-- Python 3.10+
-- pip
+Open PowerShell:
 
-### Setup
-
-```bash
-git clone https://github.com/jens-duttke/usage-monitor-for-claude.git
-cd usage-monitor-for-claude
+```powershell
+git clone https://github.com/ihor-sokoliuk/usage-monitor-for-codex.git
+Set-Location .\usage-monitor-for-codex
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Run
-
-```bash
-python -m usage_monitor_for_claude
-```
-
-### Build EXE
-
-```bash
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests
+python -m usage_monitor_for_claude --verbose
 python build.py
+.\dist\UsageMonitorForCodex.exe --verbose
 ```
 
-Produces `dist/UsageMonitorForClaude.exe` (~12.5 MB), a single-file executable that bundles Python and all dependencies.
+The internal package deliberately remains `usage_monitor_for_claude` so upstream UI improvements stay reviewable and mergeable. WSL-specific Codex CLI selection and building from the investigation clone are not supported in v1.
 
-### Popup UI Development
+For popup-only HTML/CSS work, serve the repository root locally in one PowerShell window with `python -m http.server 8080`, then open `http://localhost:8080/usage_monitor_for_claude/popup/dev.html`. This local development server is separate from the packaged monitor's provider data path.
 
-The popup UI lives in [`usage_monitor_for_claude/popup/`](usage_monitor_for_claude/popup/) as separate HTML, CSS, and JS files. To preview and iterate on the UI without running the full app:
+### Release checklist
 
-```bash
-start http://localhost:8080/usage_monitor_for_claude/popup/dev.html && python -m http.server 8080
-```
+Releases are built from tagged source by the Windows GitHub Actions workflow:
 
-This starts a local server and opens the dev preview in your default browser. Use the buttons to switch between data presets (full, minimal, error, loading) and the language dropdown to preview every locale (so you can spot strings that overflow the popup width). Test CSS/JS changes with instant feedback.
+1. Update `__version__` and every version field in `version_info.py`.
+2. Move the release notes from `[Unreleased]` into a dated version section in `CHANGELOG.md`.
+3. Run the full suite, source smoke, clean build, frozen smoke, and dual-monitor smoke on Windows.
+4. Commit and push the release preparation.
+5. Create and push the matching namespaced tag, for example:
 
-### Create a Release
-
-1. Update dependencies: `pip install --upgrade -r requirements.txt`
-2. Update `__version__` in [`usage_monitor_for_claude/__init__.py`](usage_monitor_for_claude/__init__.py) and the version in [`version_info.py`](version_info.py) (`filevers`, `prodvers`, `FileVersion`, `ProductVersion`)
-3. Update `_FALLBACK_USER_AGENT` in [`usage_monitor_for_claude/api.py`](usage_monitor_for_claude/api.py) to the current Claude Code version
-4. In [`CHANGELOG.md`](CHANGELOG.md), rename `## [Unreleased]` to `## [1.x.x] - YYYY-MM-DD` and add a fresh empty `## [Unreleased]` section above it
-5. Run the test suite: `python -m unittest discover -s tests`
-6. Smoke test: `python -m usage_monitor_for_claude` - verify tray icon, popup, and settings
-7. Build the EXE with `python build.py`
-8. Smoke test: `dist\UsageMonitorForClaude.exe` - verify tray icon, popup, and settings
-9. Stage the changes from steps 2 to 4
-10. Commit, tag, push, and publish:
-
-   ```bash
-   git commit -m "Release v1.x.x"
-   git tag v1.x.x
-   git push origin main v1.x.x
-   gh release create v1.x.x dist/UsageMonitorForClaude.exe --title "v1.x.x" --notes "<release notes from CHANGELOG.md, followed by a [README for this version](https://github.com/jens-duttke/usage-monitor-for-claude/blob/v1.x.x/README.md) link>"
+   ```powershell
+   git tag -a codex-vX.Y.Z -m "Usage Monitor for Codex X.Y.Z"
+   git push origin codex-vX.Y.Z
    ```
 
-</details>
+The tag workflow verifies the version, runs the Windows test suite, builds `UsageMonitorForCodex.exe`, writes a SHA-256 checksum, and publishes both files as the latest GitHub Release. Code signing is not configured; public binaries may therefore trigger a Windows SmartScreen warning.
 
----
+## Contributing and upstream updates
 
-## Contributing
+Repository-wide agent and contributor rules live in [`AGENTS.md`](AGENTS.md). Run `python -m unittest discover -s tests` before handing changes off. Agents must not commit, push, tag, or use destructive Git operations; the user performs repository history operations.
 
-Contributions are welcome - whether it's bug reports, feature ideas, or pull requests. [Open an issue](https://github.com/jens-duttke/usage-monitor-for-claude/issues) to report bugs or ask questions. For feature ideas, browse and vote on existing proposals or submit your own in [Ideas](https://github.com/jens-duttke/usage-monitor-for-claude/discussions/categories/ideas).
+This fork intentionally imports upstream UI/UX work selectively instead of syncing the entire Claude provider implementation. Follow [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md); never use GitHub's one-click **Sync fork** for this repository.
 
-<details>
-<summary>For developers who want to contribute to the project</summary>
+## Credits
 
-This project is developed with [Claude Code](https://docs.anthropic.com/en/docs/claude-code). The [`.claude/CLAUDE.md`](.claude/CLAUDE.md) file contains all project conventions, coding standards, and architectural guidelines - Claude Code applies these automatically during development.
-
-### Workflow
-
-1. Read `.claude/CLAUDE.md` to understand the project conventions
-2. Implement your changes with Claude Code - it will follow the guidelines automatically
-3. Before committing, run the `/review` slash command to perform a systematic quality review of all staged changes (code, tests, documentation)
-4. Stage remaining fixes if any, then run `/commit-message` to generate a properly formatted commit message
-
-### Adding features
-
-New features should follow the existing architecture. Key points from the guidelines:
-
-- Security-critical code (credentials, API calls) stays isolated in [`api.py`](usage_monitor_for_claude/api.py)
-- All user-facing changes need updates in [`CHANGELOG.md`](CHANGELOG.md), [`README.md`](README.md), and [`docs/configuration.md`](docs/configuration.md) where applicable
-- Tests are required - run `python -m unittest discover -s tests` before committing
-- The app is read-only and must never write files to disk
-
-</details>
-
----
+Forked from Jens Duttke's [Usage Monitor for Claude](https://github.com/jens-duttke/usage-monitor-for-claude). The original design, Windows tray UI, popup, notifications, polling behavior, localization framework, and much of the implementation come from that MIT-licensed project.
 
 ## License
 
-MIT
-
----
+MIT - see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This is an independent, community-built project. It is **not** created, endorsed, or officially supported by [Anthropic](https://www.anthropic.com/). "Claude" and "Anthropic" are trademarks of Anthropic, PBC. Use of these names is solely for descriptive purposes to indicate compatibility.
+This is an independent, community-built project. It is not created, endorsed, or officially supported by OpenAI. "Codex", "ChatGPT", and "OpenAI" are used descriptively to indicate compatibility and are trademarks of OpenAI.

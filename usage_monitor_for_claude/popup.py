@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import webview  # type: ignore[import-untyped]  # no type stubs available
 
 from . import __version__
-from .claude_cli import CHANGELOG_URL, find_installations
+from .codex_cli import CHANGELOG_URL, find_installations
 from .formatting import divider_positions, elapsed_pct, expand_popup_fields, field_period, format_credits, popup_label, time_until
 from .i18n import T
 from .settings import BAR_BG, BAR_DIVIDER, BAR_FG, BAR_FG_WARN, BAR_MARKER, BG, COMPACT_HIDE, FG, FG_DIM, FG_HEADING, FG_LINK, POPUP_FIELDS
@@ -49,7 +49,7 @@ class _MONITORINFO(ctypes.Structure):
 __all__ = ['UsagePopup']
 
 if TYPE_CHECKING:
-    from .app import UsageMonitorForClaude
+    from .app import UsageMonitorForCodex
     from .cache import CacheSnapshot
 
 
@@ -231,7 +231,7 @@ class UsagePopup:
     WIDTH = 340
     _CHECK_MS = 2000
 
-    def __init__(self, app: UsageMonitorForClaude) -> None:
+    def __init__(self, app: UsageMonitorForCodex) -> None:
         """Create and display a popup window with usage details.
 
         Blocks the calling thread until the window is closed.
@@ -239,7 +239,7 @@ class UsagePopup:
 
         Parameters
         ----------
-        app : UsageMonitorForClaude
+        app : UsageMonitorForCodex
             Parent application providing ``cache`` for data access.
         """
         self.app = app

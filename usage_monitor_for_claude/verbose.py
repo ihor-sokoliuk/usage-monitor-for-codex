@@ -11,14 +11,17 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import importlib.metadata
+import io
 import locale
 import os
 import platform
 import sys
 import winreg
+from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Callable
 
-__all__ = ['setup_console', 'print_startup_diagnostics', 'print_runtime_diagnostics']
+__all__ = ['capture_diagnostics', 'setup_console', 'print_startup_diagnostics', 'print_runtime_diagnostics']
 
 # WebView2 registry GUIDs (runtime, beta, dev, canary)
 _WEBVIEW2_GUIDS = [
@@ -27,6 +30,14 @@ _WEBVIEW2_GUIDS = [
     ('{0D50BFEC-CD6A-4F9A-964C-C7416E3ACB10}', 'Developer'),
     ('{65C35B14-6C1D-4122-AC46-7148CC9D6497}', 'Canary'),
 ]
+
+
+def capture_diagnostics(callback: Callable[[], None]) -> str:
+    """Return a diagnostic printer's sanitized output without writing stdout."""
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        callback()
+    return buffer.getvalue()
 
 
 def setup_console() -> None:
@@ -157,23 +168,11 @@ def _redact_home(path_str: str) -> str:
     return path_str
 
 
-def _credentials_status() -> str:
-    """Check if the credentials file exists (never reads its content)."""
-    config_dir = Path(os.environ.get('CLAUDE_CONFIG_DIR', '')) if os.environ.get('CLAUDE_CONFIG_DIR') else Path.home() / '.claude'
-    cred_path = config_dir / '.credentials.json'
-    display_path = _redact_home(str(cred_path))
-
-    if cred_path.exists():
-        return f'found ({display_path})'
-
-    return f'NOT FOUND ({display_path})'
-
-
 def print_startup_diagnostics() -> None:
     """Print system and environment diagnostics before webview starts."""
     from . import __version__
 
-    print(f'\n  Usage Monitor for Claude v{__version__} - Verbose Mode')
+    print(f'\n  Usage Monitor for Codex v{__version__} - Verbose Mode')
     print(f'  {"=" * 48}')
 
     # System
@@ -198,7 +197,7 @@ def print_startup_diagnostics() -> None:
     _row('System locale', f'{sys_locale[0]}, {sys_locale[1]}' if sys_locale[0] else 'not set')
     _row('Filesystem encoding', sys.getfilesystemencoding())
     _row('Default encoding', sys.getdefaultencoding())
-    _row('CLAUDE_CONFIG_DIR', _redact_home(os.environ.get('CLAUDE_CONFIG_DIR', '')) or '(not set)')
+    _row('CODEX_HOME', _redact_home(os.environ.get('CODEX_HOME', '')) or '(not set)')
 
     # Display
     _section('Display')
@@ -217,12 +216,8 @@ def print_startup_diagnostics() -> None:
 
     # Dependencies
     _section('Dependencies')
-    for pkg in ('pywebview', 'pythonnet', 'clr-loader', 'pystray', 'Pillow', 'requests'):
+    for pkg in ('pywebview', 'pythonnet', 'clr-loader', 'pystray', 'Pillow'):
         _row(pkg, _package_version(pkg))
-
-    # Credentials
-    _section('Credentials')
-    _row('File', _credentials_status())
 
     print()
 
