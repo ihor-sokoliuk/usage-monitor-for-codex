@@ -22,7 +22,7 @@ class TestApplicationDirectory(unittest.TestCase):
             executable = Path(tmp) / 'UsageMonitorForCodex.exe'
             with patch.object(sys, 'frozen', True, create=True), \
                  patch.object(sys, 'executable', str(executable)):
-                self.assertEqual(application_directory(), Path(tmp))
+                self.assertEqual(application_directory(), Path(tmp).resolve())
 
     def test_source_build_uses_project_root(self):
         expected = Path(__file__).resolve().parent.parent
