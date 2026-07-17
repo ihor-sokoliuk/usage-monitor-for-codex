@@ -90,6 +90,12 @@ class TestTooltipLabel(unittest.TestCase):
     def test_seven_day_sonnet(self):
         self.assertEqual(tooltip_label('seven_day_sonnet'), '7d Sonnet')
 
+    def test_provider_limit_name_replaces_internal_variant(self):
+        self.assertEqual(
+            tooltip_label('seven_day_codex_bengalfox', 'gpt-5.2-codex-sonic'),
+            '7d GPT-5.2-Codex-Sonic',
+        )
+
     def test_seven_day_opus(self):
         self.assertEqual(tooltip_label('seven_day_opus'), '7d Opus')
 
@@ -142,6 +148,12 @@ class TestPopupLabel(unittest.TestCase):
 
     def test_seven_day_sonnet(self):
         self.assertEqual(popup_label('seven_day_sonnet'), 'Weekly (Sonnet)')
+
+    def test_provider_limit_name_replaces_internal_variant(self):
+        self.assertEqual(
+            popup_label('seven_day_codex_bengalfox', 'gpt-5.2-codex-sonic'),
+            'Weekly (GPT-5.2-Codex-Sonic)',
+        )
 
     def test_seven_day_opus(self):
         self.assertEqual(popup_label('seven_day_opus'), 'Weekly (Opus)')
@@ -255,10 +267,10 @@ class TestResolveDisplayFields(unittest.TestCase):
             ['seven_day', None],
         )
 
-    def test_earlier_gap_does_not_steal_later_configured_field(self):
+    def test_available_configured_field_precedes_substitute(self):
         self.assertEqual(
             resolve_display_fields(['missing_field', 'five_hour'], self.DATA_BOTH, 2),
-            ['seven_day', 'five_hour'],
+            ['five_hour', 'seven_day'],
         )
 
     def test_zero_available(self):
@@ -276,6 +288,16 @@ class TestResolveDisplayFields(unittest.TestCase):
         self.assertEqual(
             resolve_display_fields(['five_hour', 'missing_field'], data, 2),
             ['five_hour', 'seven_day'],
+        )
+
+    def test_base_weekly_precedes_variant_when_session_is_absent(self):
+        data = {
+            'seven_day': {'utilization': 1, 'resets_at': 'x'},
+            'seven_day_codex_bengalfox': {'utilization': 0, 'resets_at': 'y'},
+        }
+        self.assertEqual(
+            resolve_display_fields(['five_hour', 'seven_day'], data, 2),
+            ['seven_day', 'seven_day_codex_bengalfox'],
         )
 
     def test_mode_suffix_kept_for_existing_and_default_for_substituted(self):
@@ -950,6 +972,17 @@ class TestFormatTooltip(unittest.TestCase):
             'seven_day_sonnet': {'utilization': 30.0, 'resets_at': ''},
         }
         self.assertEqual(format_tooltip(data), 'Codex Usage\n7d Sonnet: 30%\n5h: 10%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    def test_provider_limit_name_used_for_model_bucket(self, _mock_tu):
+        data = {
+            'seven_day_codex_bengalfox': {
+                'utilization': 3.0,
+                'resets_at': '',
+                'limit_name': 'gpt-5.2-codex-sonic',
+            },
+        }
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n7d GPT-5.2-Codex-Sonic: 3%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['seven_day_sonnet'])

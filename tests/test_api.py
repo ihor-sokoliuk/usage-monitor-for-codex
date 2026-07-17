@@ -65,6 +65,33 @@ class TestNormalizeRateLimits(unittest.TestCase):
         result = _normalize_rate_limits(_load_fixture('04_multi_bucket.json'))
         self.assertEqual(set(result), {'five_hour', 'seven_day', 'seven_day_gpt_5_pro'})
 
+    def test_keyed_model_limit_preserves_friendly_name(self):
+        payload = {'rateLimitsByLimitId': {'codex_bengalfox': {
+            'limitName': 'gpt-5.2-codex-sonic',
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertEqual(result['seven_day_codex_bengalfox']['limit_name'], 'gpt-5.2-codex-sonic')
+
+    def test_default_codex_limit_does_not_override_generic_label(self):
+        payload = {'rateLimitsByLimitId': {'codex': {
+            'limitName': 'gpt-5.6-sol',
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertNotIn('limit_name', result['seven_day'])
+
+    def test_invalid_friendly_name_is_ignored(self):
+        payload = {'rateLimitsByLimitId': {'codex_bengalfox': {
+            'limitName': {'unexpected': 'object'},
+            'primary': {'usedPercent': 5, 'windowDurationMins': 10080},
+            'secondary': None,
+        }}}
+        result = _normalize_rate_limits(payload)
+        self.assertNotIn('limit_name', result['seven_day_codex_bengalfox'])
+
     def test_empty_keyed_map_falls_back_to_snapshot(self):
         payload = _load_fixture('01_five_hour_plus_weekly.json')
         payload['rateLimitsByLimitId'] = {}

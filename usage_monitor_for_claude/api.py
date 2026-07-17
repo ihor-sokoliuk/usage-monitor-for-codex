@@ -308,10 +308,15 @@ def _normalize_rate_limits(payload: Any) -> dict[str, Any]:
             if not isinstance(bucket, dict):
                 malformed = True
                 continue
+            limit_name = bucket.get('limitName')
+            if limit_id == 'codex' or not isinstance(limit_name, str) or not limit_name.strip():
+                limit_name = None
+            else:
+                limit_name = limit_name.strip()
             for slot in ('primary', 'secondary'):
                 window = bucket.get(slot)
                 try:
-                    entry = _window_entry(window)
+                    entry = _window_entry(window, limit_name)
                 except _MalformedProviderData:
                     malformed = True
                     continue
@@ -355,8 +360,8 @@ def _normalize_rate_limits(payload: Any) -> dict[str, Any]:
     return result
 
 
-def _window_entry(window: Any) -> dict[str, Any] | None:
-    """Convert one wire window into a quota entry."""
+def _window_entry(window: Any, limit_name: str | None = None) -> dict[str, Any] | None:
+    """Convert one wire window into a quota entry with optional display metadata."""
     if window is None:
         return None
     if not isinstance(window, dict):
@@ -383,7 +388,10 @@ def _window_entry(window: Any) -> dict[str, Any] | None:
                 resets_at = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
         except (OSError, OverflowError, TypeError, ValueError):
             resets_at = ''
-    return {'utilization': utilization, 'resets_at': resets_at}
+    entry = {'utilization': utilization, 'resets_at': resets_at}
+    if limit_name:
+        entry['limit_name'] = limit_name
+    return entry
 
 
 def _field_name(minutes: Any, limit_id: str | None, slot: str | None) -> str:

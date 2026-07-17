@@ -31,6 +31,7 @@ The response can provide a compatibility snapshot in `rateLimits` and keyed buck
 - Credits metadata is ignored in v1.
 
 Each window uses `usedPercent` directly as percent consumed. `resetsAt` is a Unix timestamp converted to an aware ISO-8601 value; a missing reset becomes an empty string. `windowDurationMins` is optional.
+For non-default keyed buckets, a non-empty `limitName` is retained as display metadata so the UI can show the provider's model name instead of an internal metered-limit ID.
 
 ## Field naming
 
@@ -44,7 +45,7 @@ Known duration names use number words where available:
 | 10080 | `seven_day` |
 | 43200 | `30_day` |
 
-For keyed buckets, a non-`codex` limit ID is sanitized and appended to a duration name, for example `seven_day_gpt_5_pro`. A keyed window without a duration uses the sanitized limit ID alone; an empty sanitized suffix falls back to `limit` or `<period>_limit`.
+For keyed buckets, a non-`codex` limit ID is sanitized and appended to a duration name, for example `seven_day_gpt_5_pro`. A keyed window without a duration uses the sanitized limit ID alone; an empty sanitized suffix falls back to `limit` or `<period>_limit`. These stable internal field names drive settings and event variables, while popup and tooltip labels prefer `limitName` when the provider supplies it.
 
 For snapshot windows, a missing duration falls back to its `primary` or `secondary` slot name. That fallback is deliberately displayable but unparseable, so it has a label and percentage without a time marker or dividers.
 

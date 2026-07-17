@@ -54,6 +54,7 @@ Each instance gets its own tooltip prefix, settings search root, mutex identity,
 ## Usage field names
 
 Fields are detected dynamically from app-server windows. Common durations are `five_hour` and `seven_day`; other examples include `90_minute`, `13_hour`, and `30_day`. A keyed model limit can add a suffix such as `seven_day_gpt_5_pro`.
+The internal suffix remains stable for settings and event variables, while the popup and tooltip use the provider's friendly model name when one is available.
 
 Do not treat those examples as a fixed provider schema. Duration-less keyed windows use a sanitized limit ID, and duration-less snapshot windows use a fallback such as `primary`. Such fields show utilization but have no time marker or dividers because their duration is unknown.
 
@@ -127,7 +128,7 @@ Entries can be normalized field names or section keys: `account`, `claude_code`,
 |---|---|
 | `icon_fields` | `["five_hour", "seven_day"]` |
 
-Exactly two entries are required. Missing configured fields are replaced immediately with unused detected fields, so a weekly-only account shows its weekly bar in the top slot. If nothing remains, the slot is empty. A configured `:overage` suffix is preserved only when that field is available; substituted fields use utilization mode.
+Exactly two entries are required. Available configured fields are shown first in configured order, then missing entries are replaced with unused detected fields in duration order. This keeps a generic weekly limit above its model-specific weekly variants when no session limit exists. If nothing remains, the slot is empty. A configured `:overage` suffix is preserved only when that field is available; substituted fields use utilization mode.
 
 The tray draws only resolved quota slots. One available quota produces one centered bar; two available quotas produce two bars. An empty slot does not create a gray placeholder line.
 

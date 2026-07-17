@@ -62,6 +62,17 @@ class TestUsageEntries(unittest.TestCase):
         labels = [e[0] for e in entries]
         self.assertEqual(labels, [popup_label('five_hour'), popup_label('seven_day')])
 
+    def test_provider_limit_name_replaces_internal_bucket_name(self):
+        usage = {
+            'seven_day_codex_bengalfox': {
+                'utilization': 0,
+                'resets_at': '2026-01-07T00:00:00Z',
+                'limit_name': 'gpt-5.2-codex-sonic',
+            },
+        }
+        entries = _usage_entries(usage)
+        self.assertEqual(entries[0][0], 'Weekly (GPT-5.2-Codex-Sonic)')
+
     def test_periods_derived_from_field_name(self):
         """Period is derived from the field name via field_period."""
         usage = {

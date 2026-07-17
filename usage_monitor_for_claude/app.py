@@ -499,8 +499,14 @@ class UsageMonitorForCodex:
 
         self._check_threshold_alerts(result.data)
 
-        # Adaptive polling: speed up when icon top field usage is increasing
-        icon_top_key = ICON_FIELDS[0].split(':', 1)[0]
+        # Adaptive polling: speed up when the currently resolved top icon field is increasing
+        resolved_icon_top = resolve_display_fields(ICON_FIELDS, result.data, 2)[0]
+        icon_top_key = resolved_icon_top.split(':', 1)[0] if resolved_icon_top else ''
+        if not icon_top_key:
+            icon_top_key = next(
+                (entry.split(':', 1)[0] for entry in ICON_FIELDS if entry.split(':', 1)[0] in quota_fields),
+                '',
+            )
         icon_top_pct = quota_fields.get(icon_top_key, 0)
         icon_top_prev = self._prev_utilization.get(icon_top_key)
         if icon_top_prev is not None and icon_top_pct > icon_top_prev:
@@ -578,7 +584,7 @@ class UsageMonitorForCodex:
 
             if highest_exceeded > last_notified:
                 title = T['notify_threshold_title']
-                label = popup_label(variant_key)
+                label = popup_label(variant_key, entry.get('limit_name'))
                 message = T['notify_threshold_generic'].format(label=label, pct=f'{pct:.0f}')
                 self._notify_or_defer(f'threshold_{variant_key}', message, title)
                 self._run_threshold_command(variant_key, pct, highest_exceeded, entry, title, message)

@@ -6,6 +6,16 @@ This project is a fork of Jens Duttke's [Usage Monitor for Claude](https://githu
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-16
+
+### Changed
+
+- Model-scoped usage windows use the provider's friendly model name instead of exposing an internal rate-limit identifier.
+
+### Fixed
+
+- When the configured session window is absent, the generic weekly window now stays above model-specific weekly windows and supplies the tray percentage and adaptive-polling signal.
+
 ## [1.0.0] - 2026-07-16
 
 ### Added

@@ -10,8 +10,8 @@ Usage Monitor for Codex is a lightweight, portable Windows tray app. It reads Ch
 
 - **Portable** - a single Windows EXE with no installer and no Python runtime required
 - **Zero configuration for one account** - uses your existing Codex ChatGPT sign-in; the local app-server handles authentication and the monitor never reads a credential store
-- **Live tray icon** - up to two configurable progress bars, with only available quotas drawn, plus a configurable tooltip, percentage display, automatic substitution when a configured window is absent, and theme-aware colors
-- **Detail popup** - account email and plan plus every active usage window, including model-scoped limits and unusual durations; reset countdowns follow your Windows 12-hour or 24-hour clock setting
+- **Live tray icon** - up to two configurable progress bars, with only available quotas drawn, plus a configurable tooltip, a percentage from the first displayed quota, automatic substitution when a configured window is absent, and theme-aware colors
+- **Detail popup** - account email and plan plus every active usage window, including provider-named model limits and unusual durations; reset countdowns follow your Windows 12-hour or 24-hour clock setting
 - **Codex versions** - reports the native CLI and `openai.chatgpt` extensions found in VS Code, Cursor, and Windsurf
 - **Automatic Codex CLI updates** - runs the official self-updater at startup and daily by default, then notifies only when the installed version changes
 - **Smart alerts** - configurable percentage thresholds, time-aware pace alerts, and reset notifications

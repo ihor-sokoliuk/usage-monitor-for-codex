@@ -8,6 +8,7 @@ elapsed period percentages, credit amounts, status lines, and tooltip text.
 from __future__ import annotations
 
 import locale as _locale
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -71,13 +72,25 @@ def _title_case_variant(text: str) -> str:
     return ' '.join(_TITLE_CASE_EXCEPTIONS.get(w.lower(), w.title()) for w in text.split('_'))
 
 
-def tooltip_label(field: str) -> str:
+def _friendly_limit_name(limit_name: str) -> str:
+    """Format a provider model slug while preserving its punctuation."""
+    normalized = limit_name.strip().replace('_', '-')
+    return re.sub(
+        r'[A-Za-z]+',
+        lambda match: _TITLE_CASE_EXCEPTIONS.get(match.group(0).lower(), match.group(0).title()),
+        normalized,
+    )
+
+
+def tooltip_label(field: str, limit_name: str | None = None) -> str:
     """Generate a short tooltip label from an API field name.
 
     Parameters
     ----------
     field : str
         API field name, e.g. ``'five_hour'``, ``'seven_day_sonnet'``.
+    limit_name : str or None
+        Provider-supplied model name for a model-scoped limit.
 
     Returns
     -------
@@ -85,24 +98,27 @@ def tooltip_label(field: str) -> str:
         Short label like ``'5h'``, ``'7d'``, or ``'7d Sonnet'``.
         Falls back to title case of the full field name if unparseable.
     """
+    friendly_name = _friendly_limit_name(limit_name) if limit_name else None
     parsed = parse_field_name(field)
     if parsed is None:
-        return _title_case_variant(field)
+        return friendly_name or _title_case_variant(field)
 
     number, unit, variant = parsed
     label = f'{number}{_UNIT_SUFFIXES[unit]}'
     if variant:
-        label += f' {_title_case_variant(variant)}'
+        label += f' {friendly_name or _title_case_variant(variant)}'
     return label
 
 
-def popup_label(field: str) -> str:
+def popup_label(field: str, limit_name: str | None = None) -> str:
     """Generate a popup bar label from an API field name using i18n templates.
 
     Parameters
     ----------
     field : str
         API field name, e.g. ``'five_hour'``, ``'seven_day_sonnet'``.
+    limit_name : str or None
+        Provider-supplied model name for a model-scoped limit.
 
     Returns
     -------
@@ -110,13 +126,14 @@ def popup_label(field: str) -> str:
         Localized label like ``'Session (5hr)'`` or ``'Weekly (Sonnet)'``.
         Falls back to title case with abbreviation exceptions if unparseable.
     """
+    friendly_name = _friendly_limit_name(limit_name) if limit_name else None
     parsed = parse_field_name(field)
     if parsed is None:
-        return _title_case_variant(field)
+        return friendly_name or _title_case_variant(field)
 
     number, unit, variant = parsed
     if variant:
-        suffix = _title_case_variant(variant)
+        suffix = friendly_name or _title_case_variant(variant)
     elif unit == 'hour':
         suffix = f'{number}hr'
     elif unit == 'minute':
@@ -202,9 +219,9 @@ def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> 
 def resolve_display_fields(configured: list[str], data: dict[str, Any], count: int) -> list[str | None]:
     """Resolve configured display fields against the fields actually present in the data.
 
-    Each configured entry keeps its slot (including a ``:mode`` suffix) when its
-    base field is still available. Missing or duplicate entries are replaced by
-    the next remaining detected field in duration order, using the default mode.
+    Available configured entries come first in configured order, including any
+    ``:mode`` suffix. Missing and duplicate entries are skipped, then remaining
+    detected fields fill the list in duration order using the default mode.
     Slots with nothing left to show are ``None``.
 
     Parameters
@@ -246,19 +263,10 @@ def resolve_display_fields(configured: list[str], data: dict[str, Any], count: i
         if base in remaining:
             remaining.remove(base)
             slots.append(entry)
-        else:
-            slots.append(None)
-    while len(slots) < count:
-        slots.append(None)
 
-    for index, slot in enumerate(slots):
-        if slot is None and remaining:
-            slots[index] = remaining.pop(0)
-
-    populated = [slot for slot in slots if slot is not None]
-    populated.extend([None] * (count - len(populated)))
-
-    return populated
+    slots.extend(remaining[:count - len(slots)])
+    slots.extend([None] * (count - len(slots)))
+    return slots
 
 
 def elapsed_pct(resets_at: str, period_seconds: int) -> float | None:
@@ -487,7 +495,7 @@ def format_tooltip(data: dict[str, Any]) -> str:
         key = resolved.split(':', 1)[0]
         entry = data.get(key)
         if entry and entry.get('utilization') is not None:
-            short = tooltip_label(key)
+            short = tooltip_label(key, entry.get('limit_name'))
             pct = f"{entry['utilization']:.0f}%"
             reset = time_until(entry.get('resets_at', ''))
             line = f'{short}: {pct}'

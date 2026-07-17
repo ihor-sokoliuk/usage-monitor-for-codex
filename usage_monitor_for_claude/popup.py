@@ -64,7 +64,12 @@ def _usage_entries(usage: dict[str, Any]) -> list[tuple[str, dict[str, Any] | No
     by field name when the pinned compact view is configured.
     """
     fields = expand_popup_fields(POPUP_FIELDS, usage)
-    return [(popup_label(key), usage.get(key), field_period(key), key) for key in fields]
+    result = []
+    for key in fields:
+        entry = usage.get(key)
+        limit_name = entry.get('limit_name') if isinstance(entry, dict) else None
+        result.append((popup_label(key, limit_name), entry, field_period(key), key))
+    return result
 
 
 def _snapshot_to_dict(

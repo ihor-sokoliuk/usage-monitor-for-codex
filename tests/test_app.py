@@ -796,6 +796,22 @@ class TestFastPolling(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_fast_polling_tracks_resolved_weekly_top_field(self, _icon, _tooltip):
+        """Weekly usage starts fast polling when the configured session field is absent."""
+        self.app._prev_utilization = {'seven_day': 0.0, 'seven_day_codex_bengalfox': 0.0}
+        data = {
+            'seven_day': {'utilization': 1.0, 'resets_at': ''},
+            'seven_day_codex_bengalfox': {'utilization': 0.0, 'resets_at': ''},
+        }
+        self.app.cache = MagicMock()
+        self.app.cache.update.return_value = UpdateResult(data=data)
+
+        self.app.update()
+
+        self.assertGreater(self.app._fast_polls_remaining, 0)
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
     def test_fast_polling_decrements(self, _icon, _tooltip):
         """Fast poll counter decrements when usage is stable."""
         self.app._prev_utilization = {'five_hour': 40.0, 'seven_day': 10.0}
@@ -898,6 +914,23 @@ class TestRenderTray(unittest.TestCase):
         self.app._render_tray()
 
         mock_icon.assert_called_once_with(42.0, 0, False, mode_top='utilization', mode_bottom='utilization', time_pct_top=None, time_pct_bottom=None, extra_usage_available=False, bar_count=1)
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_generic_weekly_usage_drives_number_before_model_bucket(self, mock_icon, _tooltip):
+        """The first popup-style weekly bucket supplies the tray number."""
+        self.app._last_response = {
+            'seven_day': {'utilization': 1.0, 'resets_at': ''},
+            'seven_day_codex_bengalfox': {'utilization': 0.0, 'resets_at': ''},
+        }
+        self.app._render_tray()
+
+        mock_icon.assert_called_once_with(
+            1.0, 0, False,
+            mode_top='utilization', mode_bottom='utilization',
+            time_pct_top=None, time_pct_bottom=None,
+            extra_usage_available=False, bar_count=2,
+        )
 
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
