@@ -2,8 +2,8 @@
 
 VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 0, 1, 0),
-        prodvers=(1, 0, 1, 0),
+        filevers=(1, 20, 0, 0),
+        prodvers=(1, 20, 0, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,          # VOS_NT_WINDOWS32
@@ -17,11 +17,11 @@ VSVersionInfo(
                 [
                     StringStruct('CompanyName', 'Ihor Sokoliuk'),
                     StringStruct('FileDescription', 'Usage Monitor for Codex'),
-                    StringStruct('FileVersion', '1.0.1.0'),
+                    StringStruct('FileVersion', '1.20.0.0'),
                     StringStruct('InternalName', 'UsageMonitorForCodex'),
                     StringStruct('OriginalFilename', 'UsageMonitorForCodex.exe'),
                     StringStruct('ProductName', 'Usage Monitor for Codex'),
-                    StringStruct('ProductVersion', '1.0.1.0'),
+                    StringStruct('ProductVersion', '1.20.0.0'),
                 ],
             ),
         ]),
