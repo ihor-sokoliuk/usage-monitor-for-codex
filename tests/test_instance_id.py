@@ -57,6 +57,15 @@ class TestParseConfigDir(unittest.TestCase):
         argv = ['app.exe', '--codex-home=C:\\first', '--codex-home=C:\\second']
         self.assertEqual(parse_codex_home(argv), r'C:\second')
 
+    def test_drive_root_keeps_separator(self):
+        self.assertEqual(parse_codex_home(['app.exe', '--codex-home=D:\\']), 'D:\\')
+
+    def test_drive_root_with_cmd_trailing_quote(self):
+        self.assertEqual(parse_codex_home(['app.exe', '--codex-home=D:\\"']), 'D:\\')
+
+    def test_drive_root_forward_slash(self):
+        self.assertEqual(parse_codex_home(['app.exe', '--codex-home=D:/']), 'D:\\')
+
 
 class TestConfigDirSuffix(unittest.TestCase):
     """Tests for config_dir_suffix() and is_default_config_dir()."""

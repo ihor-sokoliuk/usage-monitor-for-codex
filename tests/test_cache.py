@@ -119,6 +119,31 @@ class TestCooldownBehavior(unittest.TestCase):
         self.assertIsNotNone(result.data)
         self.assertEqual(fetch.call_count, 2)
 
+    @patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(_SUCCESS_DATA))
+    @patch('usage_monitor_for_claude.cache.time')
+    def test_backward_clock_jump_does_not_stall_cooldown(self, mock_time, fetch):
+        cache = _make_cache()
+        mock_time.time.return_value = 10000.0
+        cache.update()
+        fetch.reset_mock()
+
+        mock_time.time.return_value = 6400.0
+        result = cache.update()
+
+        self.assertIsNotNone(result.data)
+        fetch.assert_called_once()
+
+    @patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(_SUCCESS_DATA))
+    @patch('usage_monitor_for_claude.cache.time')
+    def test_backward_clock_jump_caps_rate_limit_backoff(self, mock_time, _fetch):
+        cache = _make_cache()
+        cache._rate_limit_until = 10000.0
+        mock_time.time.return_value = 5000.0
+
+        cache.update()
+
+        self.assertLessEqual(cache._rate_limit_until - 5000.0, 900)
+
 
 class TestSuccessState(unittest.TestCase):
     def _updated(self):
@@ -172,6 +197,19 @@ class TestErrorState(unittest.TestCase):
         with patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(_SERVER_MSG_DATA)):
             cache.update()
         self.assertEqual(cache.last_error, 'HTTP 429\nRate limited.')
+
+    @patch('usage_monitor_for_claude.cache.time.time', return_value=1000.0)
+    def test_recovery_retry_rate_limit_arms_backoff_and_surfaces_429(self, _time):
+        """A rate limit returned by the adapter's recovery retry is current state."""
+        rate_limited = {'error': 'HTTP 429', 'rate_limited': True, 'retry_after': 300}
+        cache = _make_cache()
+
+        with patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(rate_limited, _PROFILE_A, True)):
+            result = cache.update()
+
+        self.assertEqual(result.data, rate_limited)
+        self.assertEqual(cache.rate_limit_remaining, 300)
+        self.assertEqual(cache.last_error, 'HTTP 429')
 
     def test_no_server_message_leaves_error_unchanged(self):
         cache = _make_cache()

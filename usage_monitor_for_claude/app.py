@@ -62,10 +62,11 @@ def _align_to_reset(interval: int, next_reset: float | None) -> tuple[int, bool]
 
     Every returned interval stays at or above ``POLL_FAST`` (the cache
     cooldown), so the reset is caught without polling faster.  The poll before
-    the reset is pulled forward to ``POLL_FAST`` seconds before it; from there
-    the confirming poll lands ``RESET_BUFFER`` seconds after the reset.  When
-    the current poll is already too close to pull the previous one forward
-    without breaking the cooldown, the confirming poll is committed directly.
+    the reset is pulled forward to ``POLL_FAST - RESET_BUFFER`` seconds before
+    it (the danger-window start); from there the confirming poll lands
+    ``RESET_BUFFER`` seconds after the reset. When the current poll is already
+    too close to pull the previous one forward without breaking the cooldown,
+    the confirming poll is committed directly.
 
     Parameters
     ----------
@@ -97,8 +98,8 @@ def _align_to_reset(interval: int, next_reset: float | None) -> tuple[int, bool]
     if next_reset < interval + danger:
         # A normal interval would drop the next poll into that last window,
         # from where the confirming poll would overshoot.  Pull it forward to
-        # the window start (POLL_FAST before the reset); if that is too close
-        # to keep POLL_FAST spacing, commit to the confirming poll directly.
+        # the window start (POLL_FAST - RESET_BUFFER before the reset); if that
+        # is too close to keep POLL_FAST spacing, commit to the confirming poll.
         pre = int(next_reset) - danger
         return (pre if pre >= POLL_FAST else post), True
 
@@ -128,6 +129,7 @@ class UsageMonitorForCodex:
         self._auth_error_streak = 0
         self._last_codex_update_check: float | None = None
         self._idle_reset_pending = False
+        self._notify_lock = threading.Lock()
         self._deferred_notifications: dict[str, tuple[str, str]] = {}
 
         # Popup state
@@ -474,6 +476,7 @@ class UsageMonitorForCodex:
 
         # Notify when quota resets after being nearly exhausted, but only if no other quota is blocking usage.
         # While idle/locked, defer notifications until the user returns (avoids lock screen privacy concerns).
+        reset_detected = False
         for key, pct in quota_fields.items():
             prev = self._prev_utilization.get(key)
             if prev is None:
@@ -488,7 +491,10 @@ class UsageMonitorForCodex:
             any_blocking = any(other_pct >= 99 for other_key, other_pct in quota_fields.items() if other_key != key)
 
             if prev > reset_threshold and pct < prev and not any_blocking:
-                self._notify_or_defer('reset', T['notify_reset'], T['notify_reset_title'])
+                reset_detected = True
+
+        if reset_detected:
+            self._notify_or_defer('reset', T['notify_reset'], T['notify_reset_title'])
 
         # Run reset command on any detected usage drop (independent of notification threshold)
         for key, pct in quota_fields.items():
@@ -539,15 +545,17 @@ class UsageMonitorForCodex:
             Notification title.
         """
         if self._is_user_away():
-            self._deferred_notifications[category] = (message, title)
+            with self._notify_lock:
+                self._deferred_notifications[category] = (message, title)
         else:
             self.icon.notify(message, title)
 
     def _flush_deferred_notifications(self) -> None:
         """Show all deferred notifications and clear the queue."""
-        for message, title in self._deferred_notifications.values():
+        with self._notify_lock:
+            pending, self._deferred_notifications = self._deferred_notifications, {}
+        for message, title in pending.values():
             self.icon.notify(message, title)
-        self._deferred_notifications.clear()
 
     def _check_threshold_alerts(self, data: dict[str, Any]) -> None:
         """Show a notification when usage crosses a configured threshold.
@@ -914,6 +922,10 @@ class UsageMonitorForCodex:
                     if self._last_response.get('auth_error') or self._last_response.get('no_auth'):
                         break
 
+                if target - time.time() > interval + POLL_FAST:
+                    target = time.time() + interval
+                    self._next_poll_time = target
+
                 # If another thread (popup) fetched successfully, push the next
                 # poll a full interval past that fetch to avoid a redundant one.
                 # Only react to an actual new fetch (last_success advanced), not
@@ -922,14 +934,19 @@ class UsageMonitorForCodex:
                 if lst is not None and (last_success_seen is None or lst > last_success_seen):
                     last_success_seen = lst
                     new_target = max(target, lst + interval)
-                    # Never let that push move the poll past a reset-aligned slot,
-                    # so the confirming poll still lands just after the reset
-                    # instead of a full interval later.
+                    # Keep the pushed poll out of the danger window immediately
+                    # before the reset and never past the reset-aligned slot.
                     next_reset = self._seconds_until_next_reset()
-                    if next_reset is not None and next_reset < interval:
-                        new_target = min(new_target, self._reset_aligned_poll_target(next_reset))
+                    if next_reset is not None:
+                        reset_epoch = time.time() + next_reset
+                        aligned = self._reset_aligned_poll_target(next_reset)
+                        if new_target > aligned or reset_epoch - (POLL_FAST - RESET_BUFFER) < new_target < reset_epoch:
+                            new_target = aligned
                     target = new_target
                     self._next_poll_time = target
+
+                if self._deferred_notifications and not self._is_user_away():
+                    self._flush_deferred_notifications()
 
                 # Pause polling while the user is away.
                 # Regular polling stops entirely during idle/lock.

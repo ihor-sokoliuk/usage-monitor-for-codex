@@ -338,16 +338,18 @@ def divider_positions(resets_at: str, period_seconds: int) -> list[float]:
         start_local = start_utc.astimezone()
         end_local = reset_utc.astimezone()
 
-        # First midnight after the period start
-        midnight = (start_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        day = start_local.date() + timedelta(days=1)
 
         positions = []
-        while midnight < end_local:
+        while True:
+            midnight = datetime(day.year, day.month, day.day).astimezone()
+            if midnight >= end_local:
+                break
             elapsed = (midnight - start_local).total_seconds()
             rel = elapsed / period_seconds
             if rel > 0.003:
                 positions.append(rel)
-            midnight += timedelta(days=1)
+            day += timedelta(days=1)
 
         return positions
     except Exception:
@@ -494,7 +496,7 @@ def format_tooltip(data: dict[str, Any]) -> str:
             continue
         key = resolved.split(':', 1)[0]
         entry = data.get(key)
-        if entry and entry.get('utilization') is not None:
+        if isinstance(entry, dict) and entry.get('utilization') is not None:
             short = tooltip_label(key, entry.get('limit_name'))
             pct = f"{entry['utilization']:.0f}%"
             reset = time_until(entry.get('resets_at', ''))

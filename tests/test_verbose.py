@@ -32,7 +32,7 @@ class TestRedactHome(unittest.TestCase):
     def test_replaces_home_prefix(self):
         """Paths under the home directory are redacted with ~."""
         home = str(__import__('pathlib').Path.home())
-        self.assertEqual(_redact_home(f'{home}\\.claude\\.credentials.json'), '~\\.claude\\.credentials.json')
+        self.assertEqual(_redact_home(f'{home}\\.codex\\config.toml'), '~\\.codex\\config.toml')
 
     def test_leaves_other_paths_unchanged(self):
         """Paths outside the home directory are not modified."""
@@ -41,6 +41,19 @@ class TestRedactHome(unittest.TestCase):
     def test_empty_string(self):
         """Empty string is returned unchanged."""
         self.assertEqual(_redact_home(''), '')
+
+    def test_case_insensitive_match(self):
+        home = str(__import__('pathlib').Path.home())
+        self.assertEqual(_redact_home(f'{home.swapcase()}\\.codex\\file'), '~\\.codex\\file')
+
+    def test_prefix_boundary_not_partially_redacted(self):
+        home = str(__import__('pathlib').Path.home())
+        sibling = f'{home}en\\file.txt'
+        self.assertEqual(_redact_home(sibling), sibling)
+
+    def test_exact_home_path_redacted(self):
+        home = str(__import__('pathlib').Path.home())
+        self.assertEqual(_redact_home(home), '~')
 
 
 class TestSection(unittest.TestCase):

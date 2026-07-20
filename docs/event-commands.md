@@ -9,7 +9,8 @@ Event commands run user-selected Windows shell commands when usage events occur.
 | `on_startup_command` | The first successful provider update after app start or Restart |
 | `on_double_click_command` | The tray icon is double-clicked |
 
-A value can be one command or an ordered array:
+A value can be one command or an ordered array. Use an empty string or empty
+array to disable an event command; array entries must be non-empty strings.
 
 ```json
 {

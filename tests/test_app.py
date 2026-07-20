@@ -36,11 +36,14 @@ def _make_app(thresholds: list[float] | None = None) -> UsageMonitorForCodex:
     # Patches active for the app's lifetime, stopped by _cleanup.  The presence
     # defaults keep _is_user_away() False so notification tests are deterministic
     # regardless of the real machine's idle/lock state (idle/lock tests override).
+    # ICON_FIELDS is pinned so render tests do not inherit a machine-local
+    # settings file; custom-field tests override it explicitly.
     app._patches = [
         patch('usage_monitor_for_claude.app.get_alert_thresholds', return_value=thresholds),
         patch('usage_monitor_for_claude.app.is_workstation_locked', return_value=False),
         patch('usage_monitor_for_claude.app.get_idle_seconds', return_value=0.0),
         patch('usage_monitor_for_claude.app.AUTO_UPDATE_CODEX_CLI', False),
+        patch('usage_monitor_for_claude.app.ICON_FIELDS', ['five_hour', 'seven_day']),
     ]
     for active_patch in app._patches:
         active_patch.start()
@@ -572,6 +575,18 @@ class TestResetNotifications(unittest.TestCase):
         """Notification fires when 5h usage drops from >95% with 7d not blocking."""
         self.app._prev_utilization = {'five_hour': 97.0, 'seven_day': 50.0}
         data = {'five_hour': {'utilization': 10.0}, 'seven_day': {'utilization': 50.0}}
+        self.app.cache = MagicMock()
+        self.app.cache.update.return_value = UpdateResult(data=data)
+
+        self.app.update()
+
+        self.app.icon.notify.assert_called_once()
+
+    @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
+    @patch('usage_monitor_for_claude.app.create_icon_image')
+    def test_two_quotas_resetting_together_notify_once(self, _icon, _tooltip):
+        self.app._prev_utilization = {'seven_day': 99.0, 'seven_day_model': 99.0}
+        data = {'seven_day': {'utilization': 1.0}, 'seven_day_model': {'utilization': 1.0}}
         self.app.cache = MagicMock()
         self.app.cache.update.return_value = UpdateResult(data=data)
 
@@ -2077,6 +2092,7 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,   # target = time() + interval
             100.0,   # inner loop: time() < target
+            100.0,   # backward-jump clamp check
             100.0,   # _wait_for_activity: time() for deadline calc
             200.0,   # second iteration target
             200.0,   # inner loop exits (running=False)
@@ -2105,6 +2121,7 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,   # target = time() + interval
             100.0,   # inner loop: time() < target
+            100.0,   # backward-jump clamp check
             200.0,   # after _wait_for_activity: time() - lst >= interval
         ]
 
@@ -2131,6 +2148,7 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,   # target = time() + interval
             100.0,   # inner loop: time() < target
+            100.0,   # backward-jump clamp check
             200.0,   # after _wait_for_activity: time() - lst >= interval
         ]
 
@@ -2168,9 +2186,11 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,    # 1st iter: target = time() + interval
             100.0,    # 1st inner loop: time() < target
+            100.0,    # backward-jump clamp check
             100.0,    # deadline calc: time() + 30 + 5
             200.0,    # 2nd iter: target = time() + interval
             200.0,    # 2nd inner loop: time() < target
+            200.0,    # backward-jump clamp check
             200.0,    # deadline calc (_idle_reset_pending path): time() + 180
             400.0,    # 3rd iter: target = time() + interval
             400.0,    # 3rd inner loop: time() < target -> running=False
@@ -2213,6 +2233,7 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,    # 1st iter: target = time() + interval
             100.0,    # 1st inner loop: time() < target
+            100.0,    # backward-jump clamp check
             100.0,    # deadline calc: time() + 300 + 5
             200.0,    # after wait: time() - lst >= interval -> break
             200.0,    # 2nd iter: target = time() + interval
@@ -2256,9 +2277,11 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
         mock_time.side_effect = [
             100.0,    # 1st iter: target
             100.0,    # 1st inner loop check
+            100.0,    # backward-jump clamp check
             100.0,    # deadline calc: time() + 30 + 5
             200.0,    # 2nd iter: target
             200.0,    # 2nd inner loop check
+            200.0,    # backward-jump clamp check
             200.0,    # deadline calc (_idle_reset_pending): time() + 180
             400.0,    # 3rd iter: target
             400.0,    # 3rd inner loop check -> running=False
@@ -2357,6 +2380,80 @@ class TestPollLoopIdleInterruption(unittest.TestCase):
 
         # No reset: poll stays at last_success + interval (1000 + 180 = 1180).
         self.assertEqual(self.app._next_poll_time, 1000.0 + 180)
+
+    @patch('usage_monitor_for_claude.app.ON_RESET_COMMAND', [])
+    @patch('usage_monitor_for_claude.app.time.time', return_value=1000.0)
+    def test_midwait_fetch_never_lands_in_danger_window(self, _mock_time):
+        self.app.cache.last_success_time = 900.0
+
+        def advance_success(_seconds):
+            self.app.cache.last_success_time = 1000.0
+
+        def is_away():
+            self.app.running = False
+            return False
+
+        with patch.object(self.app, 'update'), \
+             patch.object(self.app, '_calculate_poll_interval', return_value=180), \
+             patch.object(self.app, '_is_user_away', side_effect=is_away), \
+             patch.object(self.app, '_seconds_until_next_reset', return_value=209.0), \
+             patch('usage_monitor_for_claude.app.time.sleep', side_effect=advance_success):
+            self.app.poll_loop()
+
+        self.assertEqual(self.app._next_poll_time, 1000.0 + 209.0 + RESET_BUFFER)
+
+    @patch('usage_monitor_for_claude.app.ON_RESET_COMMAND', [])
+    def test_backward_clock_jump_reanchors_poll_target(self):
+        self.app.cache.last_success_time = 9000.0
+        clock = {'now': 10000.0}
+
+        def jump_back(_seconds):
+            clock['now'] = 5000.0
+
+        def is_away():
+            self.app.running = False
+            return False
+
+        with patch.object(self.app, 'update'), \
+             patch.object(self.app, '_calculate_poll_interval', return_value=180), \
+             patch.object(self.app, '_is_user_away', side_effect=is_away), \
+             patch.object(self.app, '_seconds_until_next_reset', return_value=None), \
+             patch('usage_monitor_for_claude.app.time.time', side_effect=lambda: clock['now']), \
+             patch('usage_monitor_for_claude.app.time.sleep', side_effect=jump_back):
+            self.app.poll_loop()
+
+        self.assertEqual(self.app._next_poll_time, 5000.0 + 180)
+
+    @patch('usage_monitor_for_claude.app.time.sleep')
+    @patch('usage_monitor_for_claude.app.time.time', return_value=1000.0)
+    def test_deferred_notifications_flushed_when_user_present(self, _mock_time, _mock_sleep):
+        self.app._deferred_notifications = {'reset': ('msg', 'title')}
+
+        def is_away():
+            self.app.running = False
+            return False
+
+        with patch.object(self.app, 'update'), \
+             patch.object(self.app, '_calculate_poll_interval', return_value=180), \
+             patch.object(self.app, '_is_user_away', side_effect=is_away), \
+             patch.object(self.app, '_seconds_until_next_reset', return_value=None):
+            self.app.poll_loop()
+
+        self.app.icon.notify.assert_called_once_with('msg', 'title')
+        self.assertEqual(self.app._deferred_notifications, {})
+
+    def test_flush_tolerates_concurrent_deferral(self):
+        self.app._deferred_notifications = {'a': ('m1', 't1'), 'b': ('m2', 't2')}
+
+        def add_during_notify(*_args):
+            self.app._notify_or_defer('c', 'm3', 't3')
+
+        self.app.icon.notify.side_effect = add_during_notify
+        with patch.object(self.app, '_is_user_away', return_value=True):
+            self.app._flush_deferred_notifications()
+
+        self.assertEqual(self.app.icon.notify.call_count, 2)
+        self.assertEqual(self.app._deferred_notifications, {'c': ('m3', 't3')})
 
 
 class TestPollLoopAccountRevision(unittest.TestCase):

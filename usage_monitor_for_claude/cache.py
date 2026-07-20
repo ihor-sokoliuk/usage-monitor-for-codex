@@ -201,6 +201,12 @@ class UsageCache:
 
     def _update_locked(self, *, force: bool = False) -> UpdateResult:
         """Execute the actual update while holding ``_lock``."""
+        now = time.time()
+        if self._last_success_time is not None and now < self._last_success_time:
+            self._last_success_time = now - POLL_FAST
+        if self._rate_limit_until - now > MAX_BACKOFF:
+            self._rate_limit_until = now + MAX_BACKOFF
+
         if not force and self._last_success_time is not None and time.time() - self._last_success_time < POLL_FAST:
             log.debug('update skipped (cooldown, %.0fs remaining)', POLL_FAST - (time.time() - self._last_success_time))
             return UpdateResult(data=None)

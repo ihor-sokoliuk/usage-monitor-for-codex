@@ -2,7 +2,7 @@
 
 - Upstream: https://github.com/jens-duttke/usage-monitor-for-claude
 - Port baseline: `f9224c2667ce7210464590d1e5e3f5d8637c8c69`
-- Last reviewed upstream SHA: `f9224c2667ce7210464590d1e5e3f5d8637c8c69`
+- Last reviewed upstream SHA: `a3503e9a49c0028d8c5db6897dcd3964746bdd15`
 
 This fork imports upstream UI/UX and provider-neutral fixes selectively. It never syncs the Claude provider implementation wholesale.
 
@@ -73,6 +73,7 @@ git log --oneline <last-reviewed-sha>..upstream/main -- usage_monitor_for_claude
 | Review date | Upstream range | Last reviewed SHA | Imported | Skipped / notes |
 |---|---|---|---|---|
 | 2026-07-15 | Port baseline | `f9224c2667ce7210464590d1e5e3f5d8637c8c69` | Baseline fork | Codex provider port begins from this upstream state |
+| 2026-07-19 | `f9224c2..a3503e9` (upstream v1.20.0 plus one maintainer commit) | `a3503e9a49c0028d8c5db6897dcd3964746bdd15` | 32 provider-neutral commits were manually ported, adapted, or verified as already covered | `d4b67c3` reads Claude credentials; `a1b945c` notification-logo integration is deferred; `22bb349` changes dormant paid-credit currency UI; `de3a73f` and `d363b81` add WSL/custom Claude CLI behavior; `e160637` is the upstream release bump; `a3503e9` is upstream-only maintainer tooling |
 
 ## Port verification history
 
@@ -87,3 +88,35 @@ The optional external-login reload experiment was not performed: verification di
 
 | Date | Upstream SHA | Method | Notes |
 |---|---|---|---|
+| 2026-07-19 | `2bb37e5` | Manual Codex port | Wake the popup dismiss pump during close so hooks are released while pinned |
+| 2026-07-19 | `5646050` | Manual Codex port | Treat the first height report as a change even at the initial window height |
+| 2026-07-19 | `8ff9e47` | Manual Codex port | Fail closed when a differently privileged instance owns the mutex |
+| 2026-07-19 | `958136f` | Manual Codex port | Prove the old instance is gone before accepting a recreated mutex |
+| 2026-07-19 | `0b976f4` | Existing Codex behavior verified | Generation-atomic provider results already preserve profile state on a failed profile read |
+| 2026-07-19 | `18404a3` | Manual Codex port | Keep popup-triggered poll push-forwards out of the pre-reset danger window |
+| 2026-07-19 | `978c4af` | Manual Codex port | Recognize Chinese, Hindi, and Indonesian Windows locale names |
+| 2026-07-19 | `df86f18` | Manual Codex port | Tolerate null account and organization sections in popup profile data |
+| 2026-07-19 | `3823775` | Adapted Codex port | Skip non-dict tooltip fields; dynamic icon-field resolution already filters them |
+| 2026-07-19 | `566bc9a` | Manual Codex port | Skip IDE extension directories that cannot be enumerated |
+| 2026-07-19 | `66461c5` | Manual Codex port | Re-read and match the holder PID after the replacement dialog |
+| 2026-07-19 | `67b0273` | Manual Codex port | Read settings as UTF-8 with optional BOM |
+| 2026-07-19 | `7049fbb` | Manual Codex port | Lock and swap deferred notifications, then flush promptly on return |
+| 2026-07-19 | `d5f8f3b` | Manual Codex port | Treat blank event commands as disabled and reject blank list entries |
+| 2026-07-19 | `d8e7b45` | Manual Codex port | Deduplicate simultaneous quota-reset notifications |
+| 2026-07-19 | `b2f5516` | Existing Codex behavior verified | Stateless adapter already returns the recovery retry result; added composed 429/backoff coverage |
+| 2026-07-19 | `c6656ec` | Manual Codex port | Re-anchor cooldown, backoff, and poll targets after backward clock jumps |
+| 2026-07-19 | `f8cbdbf` | Manual Codex port | Retry transient popup update failures without advancing dedup markers |
+| 2026-07-19 | `125158a` | Manual Codex port | Keep the theme watcher alive after a callback failure |
+| 2026-07-19 | `404be58` | Manual Codex port | Serialize resize, show, and cross-DPI correction paths |
+| 2026-07-19 | `11c6782` | Manual Codex port | Rebuild popup bars when quota keys change without a count change |
+| 2026-07-19 | `8eda635` | Manual Codex port | Clamp pre-exhaustion tray glyphs to 99 |
+| 2026-07-19 | `c1213d3` | Manual Codex port | Preserve overage-bar meaning when elapsed time reaches 100 percent |
+| 2026-07-19 | `d707104` | Manual Codex port | Recompute each weekly divider from its local calendar date across DST |
+| 2026-07-19 | `d2785fe` | Adapted Codex port | Preserve drive-root `--codex-home` values |
+| 2026-07-19 | `d6dd959` | Adapted Codex port | Redact Codex home paths case-insensitively and on path boundaries |
+| 2026-07-19 | `964f51b` | Manual Codex port | Fall back when `SetProcessDpiAwarenessContext` is unavailable |
+| 2026-07-19 | `8210b85` | Manual Codex port | Correct reset-alignment documentation to match the danger-window invariant |
+| 2026-07-19 | `0df5b16` | Manual Codex port | Use identical centering expressions for created and updated popup markers |
+| 2026-07-19 | `af1c4c5` | Manual Codex port | Export `BAR_DIVIDER` from the settings module |
+| 2026-07-19 | `0d0a892` | Adapted Codex port | Isolate single-instance tests from the live default instance |
+| 2026-07-19 | `42029a5` | Adapted Codex port | Isolate tray rendering tests from machine-local icon settings |
