@@ -6,6 +6,8 @@ This project is a fork of Jens Duttke's [Usage Monitor for Claude](https://githu
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-07-19
+
 ### Fixed
 
 - Popup windows now show reliably at their initial height, release their Win32 hooks when closed, serialize concurrent size changes, retry transient WebView failures, rebuild bars after quota-field changes, and keep markers centered.

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from usage_monitor_for_claude import __version__
 from usage_monitor_for_claude import app
 from usage_monitor_for_claude.autostart import AUTOSTART_REG_BASE_NAME
 from usage_monitor_for_claude.settings import SETTINGS_FILENAME
@@ -34,6 +35,16 @@ class TestIdentityConstants(unittest.TestCase):
 
 
 class TestBuildIdentity(unittest.TestCase):
+    def test_version_metadata_matches_release(self):
+        root = Path(__file__).parent.parent
+        version = (root / 'version_info.py').read_text(encoding='utf-8')
+
+        self.assertEqual(__version__, '1.20.0')
+        self.assertIn('filevers=(1, 20, 0, 0)', version)
+        self.assertIn('prodvers=(1, 20, 0, 0)', version)
+        self.assertIn("StringStruct('FileVersion', '1.20.0.0')", version)
+        self.assertIn("StringStruct('ProductVersion', '1.20.0.0')", version)
+
     def test_codex_build_metadata_has_no_claude_product_identity(self):
         root = Path(__file__).parent.parent
         spec = (root / 'usage_monitor_for_codex.spec').read_text(encoding='utf-8')
