@@ -27,7 +27,7 @@ from .instance_id import effective_config_dir, is_default_config_dir
 
 __all__ = [
     'ALERT_TIME_AWARE', 'ALERT_TIME_AWARE_BELOW', 'AUTO_UPDATE_CODEX_CLI',
-    'BAR_BG', 'BAR_FG', 'BAR_FG_WARN', 'BAR_MARKER', 'BG',
+    'BAR_BG', 'BAR_DIVIDER', 'BAR_FG', 'BAR_FG_WARN', 'BAR_MARKER', 'BG',
     'COMPACT_HIDE', 'CURRENCY_SYMBOL',
     'FG', 'FG_DIM', 'FG_HEADING', 'FG_LINK',
     'ICON_DARK', 'ICON_FIELDS', 'ICON_LIGHT', 'IDLE_PAUSE',
@@ -87,7 +87,7 @@ def _load_settings() -> dict:
     for path in search_paths:
         if path.is_file():
             try:
-                text = path.read_text(encoding='utf-8').strip()
+                text = path.read_text(encoding='utf-8-sig').strip()
                 if not text:
                     return {}
                 data = json.loads(text)
@@ -166,10 +166,10 @@ def _validate(data: dict, path: Path) -> dict:
 
         elif key in _COMMAND_KEYS:
             if isinstance(value, str):
-                data[key] = [value]
+                data[key] = [value] if value.strip() else []
             elif isinstance(value, list):
-                if any(not isinstance(item, str) for item in value):
-                    errors.append(f'  {key}: all items must be strings')
+                if any(not isinstance(item, str) or not item.strip() for item in value):
+                    errors.append(f'  {key}: all items must be non-empty strings')
                     drop.append(key)
             else:
                 errors.append(f'  {key}: expected a string or array of strings, got {type(value).__name__}')

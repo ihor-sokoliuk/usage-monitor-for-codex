@@ -161,10 +161,16 @@ def _screen_info() -> tuple[str, str, str]:
 
 
 def _redact_home(path_str: str) -> str:
-    """Replace the user's home directory with ``~`` to avoid exposing the username."""
+    """Replace the user's home directory with ``~`` without matching sibling paths."""
     home = str(Path.home())
-    if path_str.startswith(home):
+    normalized_path = os.path.normcase(path_str)
+    normalized_home = os.path.normcase(home)
+
+    if normalized_path == normalized_home:
+        return '~'
+    if normalized_path.startswith(normalized_home + os.sep):
         return '~' + path_str[len(home):]
+
     return path_str
 
 

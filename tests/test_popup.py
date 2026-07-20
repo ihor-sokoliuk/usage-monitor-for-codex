@@ -8,6 +8,8 @@ and _init_config.
 from __future__ import annotations
 
 import ctypes
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -193,6 +195,12 @@ class TestSnapshotToDict(unittest.TestCase):
     def test_profile_missing_nested_keys(self):
         """Present but incomplete profile defaults missing fields to empty strings."""
         result = _snapshot_to_dict(_snap(profile={'account': {}}), installations=[])
+        self.assertEqual(result['profile']['email'], '')
+        self.assertEqual(result['profile']['plan'], '')
+
+    def test_profile_with_null_account_and_organization(self):
+        """A profile carrying null account fields must not crash the popup."""
+        result = _snapshot_to_dict(_snap(profile={'account': None, 'organization': None}), installations=[])
         self.assertEqual(result['profile']['email'], '')
         self.assertEqual(result['profile']['plan'], '')
 
@@ -661,6 +669,7 @@ class TestPinState(unittest.TestCase):
         popup._dragging = True
         popup._drag_start_dpi = 96
         popup._last_height = 500
+        popup._geometry_lock = threading.Lock()
         popup._window = MagicMock()
 
         with patch('ctypes.windll.user32.GetDpiForWindow', return_value=144):
@@ -683,6 +692,153 @@ class TestPinState(unittest.TestCase):
 
         self.assertFalse(popup._dragging)
         popup._window.resize.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# report_height / first show
+# ---------------------------------------------------------------------------
+
+class TestReportHeight(unittest.TestCase):
+    """Tests for serialized popup sizing and first-show behavior."""
+
+    def _build_popup(self):
+        patcher_watch = patch.object(UsagePopup, '_dismiss_watch', lambda self: None)
+        patcher_webview = patch('usage_monitor_for_claude.popup.webview')
+        patcher_watch.start()
+        mock_webview = patcher_webview.start()
+        self.addCleanup(patcher_webview.stop)
+        self.addCleanup(patcher_watch.stop)
+
+        app = MagicMock()
+        thread = threading.Thread(target=lambda: UsagePopup(app), daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2.0
+        while not mock_webview.create_window.called and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(mock_webview.create_window.called)
+
+        api = mock_webview.create_window.call_args.kwargs['js_api']
+        popup = api._popup
+        self.addCleanup(popup._closed.set)
+        popup._resize_and_position = MagicMock()
+        popup._show_window = MagicMock()
+        return popup, api
+
+    def test_first_report_at_initial_window_height_shows_popup(self):
+        popup, api = self._build_popup()
+
+        api.report_height(400)
+
+        popup._resize_and_position.assert_called_once_with(400)
+        popup._show_window.assert_called_once()
+
+    def test_zero_height_ignored(self):
+        popup, api = self._build_popup()
+
+        api.report_height(0)
+
+        popup._resize_and_position.assert_not_called()
+        popup._show_window.assert_not_called()
+
+    def test_stale_height_report_cannot_overwrite_newer_resize(self):
+        popup, api = self._build_popup()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        applied = []
+
+        def resize(height):
+            if height == 400:
+                first_entered.set()
+                release_first.wait(2)
+            applied.append(height)
+
+        popup._resize_and_position = MagicMock(side_effect=resize)
+        first = threading.Thread(target=lambda: api.report_height(400), daemon=True)
+        first.start()
+        self.assertTrue(first_entered.wait(2))
+        second = threading.Thread(target=lambda: api.report_height(523), daemon=True)
+        second.start()
+        time.sleep(0.1)
+        release_first.set()
+        first.join(2)
+        second.join(2)
+
+        self.assertEqual(applied[-1], popup._last_height)
+
+
+# ---------------------------------------------------------------------------
+# Dismiss-watch shutdown and update resilience
+# ---------------------------------------------------------------------------
+
+class TestDismissWatchShutdown(unittest.TestCase):
+    """Closing the popup must wake and terminate its Win32 message pump."""
+
+    def _start_pump(self, pinned):
+        popup = object.__new__(UsagePopup)
+        popup._running = True
+        popup._pinned = pinned
+        popup._shown = True
+        popup._popup_hwnd = 0
+        popup._pump_tid = 0
+        popup._closed = threading.Event()
+        popup._window = MagicMock()
+
+        thread = threading.Thread(target=popup._dismiss_watch, daemon=True)
+        thread.start()
+        deadline = time.time() + 1.0
+        while not popup._pump_tid and time.time() < deadline:
+            time.sleep(0.01)
+        return popup, thread
+
+    def test_close_while_pinned_exits_pump(self):
+        popup, thread = self._start_pump(pinned=True)
+        popup._close()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+    def test_window_closed_event_exits_pump(self):
+        popup, thread = self._start_pump(pinned=True)
+        popup._on_window_closed()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+
+class TestUpdateLoopResilience(unittest.TestCase):
+    """Transient WebView failures must not permanently stop popup updates."""
+
+    def test_failed_update_is_retried_on_next_tick(self):
+        popup = object.__new__(UsagePopup)
+        popup._running = True
+        popup._last_version = 0
+        popup._window = MagicMock()
+
+        snap = MagicMock()
+        snap.version = 1
+        popup.app = MagicMock()
+        popup.app.cache.snapshot = snap
+        popup.app._next_poll_time = 100.0
+
+        def eval_js(_script):
+            if popup._window.evaluate_js.call_count == 1:
+                raise RuntimeError('transient WebView2 hiccup')
+            popup._running = False
+
+        popup._window.evaluate_js.side_effect = eval_js
+        iterations = [0]
+
+        def guarded_sleep(_seconds):
+            iterations[0] += 1
+            if iterations[0] > 10:
+                popup._running = False
+
+        with patch('usage_monitor_for_claude.popup.time.sleep', side_effect=guarded_sleep), \
+             patch('usage_monitor_for_claude.popup.find_installations', return_value=[]), \
+             patch('usage_monitor_for_claude.popup._snapshot_to_dict', return_value={}):
+            popup._update_loop()
+
+        self.assertEqual(popup._window.evaluate_js.call_count, 2)
+        self.assertEqual(popup._last_version, 1)
 
 
 # ---------------------------------------------------------------------------

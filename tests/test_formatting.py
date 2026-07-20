@@ -652,6 +652,20 @@ class TestDividerPositions(unittest.TestCase):
         for pos in result:
             self.assertGreater(pos, 0.003)
 
+    def _assert_dividers_on_local_midnights(self, reset_iso: str):
+        positions = divider_positions(reset_iso, PERIOD_7D)
+        self.assertEqual(len(positions), 7)
+        start_utc = datetime.fromisoformat(reset_iso) - timedelta(seconds=PERIOD_7D)
+        for rel in positions:
+            local = (start_utc + timedelta(seconds=round(rel * PERIOD_7D))).astimezone()
+            self.assertEqual((local.hour, local.minute, local.second), (0, 0, 0))
+
+    def test_dividers_stay_on_midnights_across_autumn_dst(self):
+        self._assert_dividers_on_local_midnights('2026-11-04T11:00:00+00:00')
+
+    def test_dividers_stay_on_midnights_across_spring_dst(self):
+        self._assert_dividers_on_local_midnights('2027-03-17T11:00:00+00:00')
+
     def test_7d_first_position_approximately_correct(self):
         """First midnight in a 7d period starting at noon is at roughly 1/14 of the bar."""
         # Period: Jan 15 12:00 to Jan 22 12:00 local. First midnight is 12h into 168h = 1/14
@@ -940,6 +954,15 @@ class TestFormatTooltip(unittest.TestCase):
         """Entry with no utilization key is skipped."""
         data = {'five_hour': {}, 'seven_day': {'utilization': 50.0, 'resets_at': ''}}
         self.assertEqual(format_tooltip(data), 'Codex Usage\n7d: 50%')
+
+    @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
+    @patch('usage_monitor_for_claude.formatting.TOOLTIP_FIELDS', ['five_hour', 'limits'])
+    def test_custom_field_pointing_to_non_dict_skipped(self, _mock_tu):
+        data = {
+            'five_hour': {'utilization': 50.0, 'resets_at': ''},
+            'limits': [{'percent': 12, 'group': 'weekly'}],
+        }
+        self.assertEqual(format_tooltip(data), 'Codex Usage\n5h: 50%')
 
     @patch('usage_monitor_for_claude.formatting.time_until', return_value='')
     def test_only_seven_day(self, _mock_tu):

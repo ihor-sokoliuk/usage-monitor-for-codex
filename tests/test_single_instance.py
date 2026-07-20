@@ -27,16 +27,33 @@ def _reset_globals():
 # ---------------------------------------------------------------------------
 
 class TestSharedMemoryRoundTrip(unittest.TestCase):
-    """Verify _store_holder_info / _read_holder_info write and read correctly."""
+    """Verify _store_holder_info / _read_holder_info write and read correctly.
+
+    These tests create real kernel objects, so they run under a name unique to
+    this test process. The production name belongs to any live monitor.
+    """
 
     def setUp(self):
         _reset_globals()
+        self._isolated_names = patch(f'{MODULE}.config_dir_suffix', return_value=f'_test{os.getpid()}')
+        self._isolated_names.start()
 
     def tearDown(self):
         import usage_monitor_for_claude.single_instance as si
         if si._pid_mapping_handle:
             si._kernel32.CloseHandle(si._pid_mapping_handle)
             si._pid_mapping_handle = None
+        self._isolated_names.stop()
+
+    def _live_record(self):
+        """Read the holder record under the real, non-test object name."""
+        import usage_monitor_for_claude.single_instance as si
+
+        self._isolated_names.stop()
+        try:
+            return si._read_holder_info()
+        finally:
+            self._isolated_names.start()
 
     @patch(f'{MODULE}.__version__', '2.5.3')
     def test_round_trip_returns_pid_and_version(self):
@@ -69,6 +86,15 @@ class TestSharedMemoryRoundTrip(unittest.TestCase):
         self.assertEqual(pid, os.getpid())
         self.assertIsNotNone(version)
         self.assertTrue(len(version) < 100)
+
+    def test_store_does_not_touch_the_live_holder_record(self):
+        """Writing the isolated record leaves the production record unchanged."""
+        import usage_monitor_for_claude.single_instance as si
+
+        before = self._live_record()
+        si._store_holder_info()
+
+        self.assertEqual(self._live_record(), before)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +159,8 @@ class TestEnsureSingleInstance(unittest.TestCase):
         mock_user32 = MagicMock()
         mock_user32.MessageBoxW.return_value = 6
 
-        with patch(f'{MODULE}._kernel32', mock_kernel32), \
+        with patch.dict(f'{MODULE}.T', {'replace_failed': 'Replacement failed.'}), \
+             patch(f'{MODULE}._kernel32', mock_kernel32), \
              patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
             from usage_monitor_for_claude.single_instance import ensure_single_instance
             result = ensure_single_instance()
@@ -141,6 +168,90 @@ class TestEnsureSingleInstance(unittest.TestCase):
         self.assertFalse(result)
         mock_store.assert_not_called()
         self.assertEqual(mock_user32.MessageBoxW.call_count, 2)
+        self.assertEqual(mock_user32.MessageBoxW.call_args_list[1].args[1], 'Replacement failed.')
+
+    @patch(f'{MODULE}._store_holder_info')
+    @patch(f'{MODULE}._read_holder_info', return_value=(None, None))
+    @patch(f'{MODULE}.ctypes')
+    def test_mutex_access_denied_treated_as_running_instance(self, mock_ctypes, _read, mock_store):
+        """Access denied means the mutex exists under different rights."""
+        mock_ctypes.get_last_error.return_value = 0x5
+        mock_kernel32 = MagicMock()
+        mock_kernel32.CreateMutexW.return_value = 0
+        mock_user32 = MagicMock()
+        mock_user32.MessageBoxW.return_value = 7
+
+        with patch(f'{MODULE}._kernel32', mock_kernel32), \
+             patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
+            from usage_monitor_for_claude.single_instance import ensure_single_instance
+            result = ensure_single_instance()
+
+        self.assertFalse(result)
+        mock_user32.MessageBoxW.assert_called_once()
+        mock_store.assert_not_called()
+
+    @patch(f'{MODULE}._terminate_pid')
+    @patch(f'{MODULE}._store_holder_info')
+    @patch(f'{MODULE}._read_holder_info', return_value=(None, None))
+    @patch(f'{MODULE}.ctypes')
+    def test_mutex_unexpected_failure_fails_closed(self, mock_ctypes, _read, mock_store, mock_terminate):
+        """Unexpected mutex creation failures never run unguarded."""
+        mock_ctypes.get_last_error.return_value = 0x57
+        mock_kernel32 = MagicMock()
+        mock_kernel32.CreateMutexW.return_value = 0
+        mock_user32 = MagicMock()
+
+        with patch(f'{MODULE}._kernel32', mock_kernel32), \
+             patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
+            from usage_monitor_for_claude.single_instance import ensure_single_instance
+            result = ensure_single_instance()
+
+        self.assertFalse(result)
+        mock_store.assert_not_called()
+        mock_terminate.assert_not_called()
+
+    @patch(f'{MODULE}._terminate_pid')
+    @patch(f'{MODULE}._store_holder_info')
+    @patch(f'{MODULE}.ctypes')
+    def test_holder_exit_during_dialog_skips_terminate(self, mock_ctypes, mock_store, mock_terminate):
+        """A stale PID is not terminated after its holder record disappears."""
+        mock_ctypes.get_last_error.side_effect = [0xB7, 0]
+        mock_kernel32 = MagicMock()
+        mock_kernel32.CreateMutexW.return_value = 42
+        mock_user32 = MagicMock()
+        mock_user32.MessageBoxW.return_value = 6
+
+        with patch(f'{MODULE}._read_holder_info', side_effect=[(99999, '1.9.0'), (None, None)]), \
+             patch(f'{MODULE}._kernel32', mock_kernel32), \
+             patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
+            from usage_monitor_for_claude.single_instance import ensure_single_instance
+            result = ensure_single_instance()
+
+        self.assertTrue(result)
+        mock_terminate.assert_not_called()
+        mock_store.assert_called_once()
+
+    @patch(f'{MODULE}._terminate_pid')
+    @patch(f'{MODULE}._store_holder_info')
+    @patch(f'{MODULE}.ctypes')
+    def test_new_holder_during_dialog_not_terminated(self, mock_ctypes, mock_store, mock_terminate):
+        """A different holder PID is neither mistaken for nor terminated as the old process."""
+        mock_ctypes.get_last_error.side_effect = [0xB7, 0xB7]
+        mock_kernel32 = MagicMock()
+        mock_kernel32.CreateMutexW.return_value = 42
+        mock_user32 = MagicMock()
+        mock_user32.MessageBoxW.return_value = 6
+
+        with patch.dict(f'{MODULE}.T', {'replace_failed': 'Replacement failed.'}), \
+             patch(f'{MODULE}._read_holder_info', side_effect=[(99999, '1.9.0'), (55555, '1.9.1')]), \
+             patch(f'{MODULE}._kernel32', mock_kernel32), \
+             patch(f'{MODULE}.ctypes.windll.user32', mock_user32):
+            from usage_monitor_for_claude.single_instance import ensure_single_instance
+            result = ensure_single_instance()
+
+        self.assertFalse(result)
+        mock_terminate.assert_not_called()
+        mock_store.assert_not_called()
 
     @patch(f'{MODULE}._read_holder_info', return_value=(99999, '1.9.0'))
     @patch(f'{MODULE}.ctypes')

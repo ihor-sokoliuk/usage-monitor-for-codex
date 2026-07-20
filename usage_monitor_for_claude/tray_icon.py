@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import logging
 import os
 import winreg
 from typing import Callable
@@ -22,6 +23,8 @@ __all__ = ['ZERO_STATE_GLYPH', 'load_font', 'taskbar_uses_light_theme', 'watch_t
 THEME_REG_KEY = r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 THEME_REG_VALUE = 'SystemUsesLightTheme'
 REG_NOTIFY_CHANGE_LAST_SET = 0x00000004
+
+log = logging.getLogger(__name__)
 
 TRANSPARENT = (0, 0, 0, 0)
 
@@ -76,7 +79,10 @@ def watch_theme_change(callback: Callable[[], None]) -> None:
         while True:
             if ctypes.windll.advapi32.RegNotifyChangeKeyValue(int(key), False, REG_NOTIFY_CHANGE_LAST_SET, None, False) != 0:
                 return
-            callback()
+            try:
+                callback()
+            except Exception:
+                log.warning('theme change callback failed', exc_info=True)
 
 
 def create_icon_image(
@@ -134,7 +140,7 @@ def create_icon_image(
         text, font = '$', load_font(42)
         stroke_width = 2
     elif pct_top > 0:
-        text, font = f'{pct_top:.0f}', load_font(40)
+        text, font = f'{min(pct_top, 99):.0f}', load_font(40)
     else:
         text, font = ZERO_STATE_GLYPH, load_font(36)
 
@@ -169,7 +175,12 @@ def _draw_usage_bar(draw: ImageDraw.ImageDraw, y: int, pct: float, mode: str, ti
     """
     draw.rectangle([0, y, ICON_SIZE - 1, y + BAR_HEIGHT - 1], fill=fg_half)
 
-    if mode == 'overage' and time_pct is not None and time_pct < 100:
+    if mode == 'overage' and time_pct is not None:
+        if time_pct >= 100:
+            if pct >= 100:
+                draw.rectangle([0, y, ICON_SIZE - 1, y + BAR_HEIGHT - 1], fill=fg)
+            return
+
         overage = max(0.0, pct - time_pct)
         fill_ratio = min(1.0, overage / (100 - time_pct))
         fill_w = max(0, int(ICON_SIZE * fill_ratio))

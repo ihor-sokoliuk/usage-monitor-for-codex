@@ -12,6 +12,35 @@ from unittest.mock import MagicMock, call, patch
 import usage_monitor_for_claude.tray_icon as tray_icon_mod
 
 
+class TestWatchThemeChange(unittest.TestCase):
+    """Tests for the registry-based theme watcher."""
+
+    @patch('ctypes.windll.advapi32.RegNotifyChangeKeyValue')
+    @patch.object(tray_icon_mod, 'winreg')
+    def test_callback_exception_does_not_end_watcher(self, mock_winreg, mock_notify):
+        mock_winreg.OpenKey.return_value.__enter__.return_value = 1234
+        mock_notify.side_effect = [0, 0, 1]
+        calls = []
+
+        def callback():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError('transient render failure')
+
+        tray_icon_mod.watch_theme_change(callback)
+        self.assertEqual(len(calls), 2)
+
+
+class TestIconGlyphNearExhaustion(unittest.TestCase):
+    """Percentage glyphs below exhaustion must remain two digits."""
+
+    def test_99_5_to_99_99_renders_like_99(self):
+        reference = tray_icon_mod.create_icon_image(99.0, 10.0)
+        for pct in (99.5, 99.9, 99.99):
+            with self.subTest(pct=pct):
+                self.assertEqual(tray_icon_mod.create_icon_image(pct, 10.0).tobytes(), reference.tobytes())
+
+
 class TestLoadFont(unittest.TestCase):
     """Tests for load_font()."""
 
@@ -341,12 +370,15 @@ class TestCreateIconImageOverageMode(unittest.TestCase):
         self.assertEqual(img.size, (64, 64))
         self.assertEqual(img.mode, 'RGBA')
 
-    def test_overage_mode_time_pct_at_100_falls_back_to_utilization(self):
-        """time_pct=100 (period over) falls back to normal utilization display."""
-        img_fallback = tray_icon_mod.create_icon_image(50, 50, mode_top='overage', mode_bottom='overage', time_pct_top=100, time_pct_bottom=100)
-        img_util = tray_icon_mod.create_icon_image(50, 50)
+    def test_overage_mode_time_pct_at_100_keeps_overage_reading(self):
+        img_end_state = tray_icon_mod.create_icon_image(
+            50, 50, mode_top='overage', mode_bottom='overage', time_pct_top=100, time_pct_bottom=100,
+        )
+        img_on_pace = tray_icon_mod.create_icon_image(
+            50, 50, mode_top='overage', mode_bottom='overage', time_pct_top=50, time_pct_bottom=50,
+        )
 
-        self.assertEqual(img_fallback.tobytes(), img_util.tobytes())
+        self.assertEqual(img_end_state.tobytes(), img_on_pace.tobytes())
 
     def test_on_pace_produces_empty_bar(self):
         """Usage exactly at time_pct means on pace - bar pixels are not fully opaque (no fill)."""

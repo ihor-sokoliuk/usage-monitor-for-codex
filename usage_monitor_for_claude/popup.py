@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import json
+import logging
 import threading
 import time
 import webbrowser
@@ -35,6 +36,9 @@ _LWA_ALPHA = 0x00000002
 _SWP_NOSIZE = 0x0001
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
+_WM_QUIT = 0x0012
+
+log = logging.getLogger(__name__)
 
 
 class _MONITORINFO(ctypes.Structure):
@@ -90,8 +94,8 @@ def _snapshot_to_dict(
     # returns an empty or incomplete response, instead of rendering empty Email/Plan fields.
     profile = None
     if snap.profile:
-        account = snap.profile.get('account', {})
-        org = snap.profile.get('organization', {})
+        account = snap.profile.get('account') or {}
+        org = snap.profile.get('organization') or {}
         profile = {
             'email': account.get('email', ''),
             'plan': org.get('organization_type', '').replace('_', ' ').title(),
@@ -219,11 +223,17 @@ class _PopupApi:
 
     def report_height(self, height: int) -> None:
         """Called by JS ResizeObserver when content height changes."""
-        if height and height != self._popup._last_height:
-            self._popup._last_height = height
-            self._popup._resize_and_position(height)
-            if not self._popup._shown:
-                self._popup._show_window()
+        if not height:
+            return
+
+        popup = self._popup
+        with popup._geometry_lock:
+            if height == popup._last_height:
+                return
+            popup._last_height = height
+            popup._resize_and_position(height)
+            if not popup._shown:
+                popup._show_window()
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +266,10 @@ class UsagePopup:
         self._drag_start_dpi = 0
         self._closed = threading.Event()
         self._popup_hwnd = 0
+        self._pump_tid = 0
+        self._geometry_lock = threading.Lock()
         initial_height = 400
-        self._last_height = initial_height
+        self._last_height = 0
         snap = app.cache.snapshot
         self._last_version = snap.version
 
@@ -321,11 +333,13 @@ class UsagePopup:
         process on every click inside the content area.
         """
         this_thread = ctypes.windll.kernel32.GetCurrentThreadId()
-        WM_QUIT = 0x0012
+        msg = ctypes.wintypes.MSG()
+        ctypes.windll.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+        self._pump_tid = this_thread
 
         def _post_quit() -> None:
             if self._shown and not self._pinned:
-                ctypes.windll.user32.PostThreadMessageW(this_thread, WM_QUIT, 0, 0)
+                ctypes.windll.user32.PostThreadMessageW(this_thread, _WM_QUIT, 0, 0)
 
         # -- Shared argtypes for CallNextHookEx --
         _call_next = ctypes.windll.user32.CallNextHookEx
@@ -411,7 +425,6 @@ class UsagePopup:
         fg_hook = ctypes.windll.user32.SetWinEventHook(0x0003, 0x0003, None, fg_proc, 0, 0, 0x0002)
 
         try:
-            msg = ctypes.wintypes.MSG()
             while self._running and ctypes.windll.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 pass
         finally:
@@ -420,15 +433,23 @@ class UsagePopup:
             ctypes.windll.user32.UnhookWindowsHookEx(mouse_hook)
             ctypes.windll.user32.UnhookWindowsHookEx(kb_hook)
             ctypes.windll.user32.UnhookWinEvent(fg_hook)
+            self._pump_tid = 0
 
         self._close()
 
+    def _post_pump_quit(self) -> None:
+        """Wake the dismiss-watch pump so it can remove its hooks and exit."""
+        if self._pump_tid:
+            ctypes.windll.user32.PostThreadMessageW(self._pump_tid, _WM_QUIT, 0, 0)
+
     def _on_window_closed(self) -> None:
         self._running = False
+        self._post_pump_quit()
         self._closed.set()
 
     def _close(self) -> None:
         self._running = False
+        self._post_pump_quit()
         try:
             self._window.destroy()
         except Exception:
@@ -496,7 +517,8 @@ class UsagePopup:
 
         current_dpi = ctypes.windll.user32.GetDpiForWindow(self._popup_hwnd) or ctypes.windll.user32.GetDpiForSystem()
         if current_dpi != self._drag_start_dpi:
-            self._window.resize(self.WIDTH, self._last_height)
+            with self._geometry_lock:
+                self._window.resize(self.WIDTH, self._last_height)
 
     def _update_loop(self) -> None:
         """Poll for data changes and push updates to the popup."""
@@ -512,13 +534,14 @@ class UsagePopup:
                 if snap.version == self._last_version and next_poll_time == last_next_poll_time:
                     continue
                 if snap.version != self._last_version:
-                    self._last_version = snap.version
                     cached_installations = [{'name': i.name, 'version': i.version} for i in find_installations()]
-                last_next_poll_time = next_poll_time
                 data = _snapshot_to_dict(snap, installations=cached_installations, next_poll_time=next_poll_time)
                 self._window.evaluate_js(f'updateData({json.dumps(data)})')
+                self._last_version = snap.version
+                last_next_poll_time = next_poll_time
             except Exception:
-                break
+                log.debug('popup update push failed', exc_info=True)
+                continue
 
     def _tray_position(self, physical_width: int, physical_height: int) -> tuple[int, int]:
         """Calculate popup position near the system tray.

@@ -9,6 +9,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from usage_monitor_for_claude.dpi import set_process_dpi_awareness
 from usage_monitor_for_claude.instance_id import parse_codex_home
 
 _verbose = '--verbose' in sys.argv
@@ -36,7 +37,7 @@ if _verbose and getattr(sys, 'frozen', False):
 
 # Per-Monitor V2 must be set before pywebview's legacy SetProcessDPIAware() call,
 # which only sets SYSTEM_DPI_AWARE and breaks native menu hover at high DPI.
-ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_ssize_t(-4))
+set_process_dpi_awareness()
 
 from usage_monitor_for_claude.logging_setup import configure_logging
 from usage_monitor_for_claude.settings import LOG_BACKUP_COUNT, LOG_MAX_BYTES

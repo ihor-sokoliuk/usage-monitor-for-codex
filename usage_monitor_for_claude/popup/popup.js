@@ -324,7 +324,11 @@ function formatCountdown(totalSeconds) {
 }
 
 function updateUsageBars(entries) {
-    if (entries.length !== els.usageBars.children.length) {
+    const bars = els.usageBars.children;
+    const sameFields = entries.length === bars.length
+        && entries.every((entry, i) => bars[i].dataset.key === entry.key);
+
+    if (!sameFields) {
         els.usageBars.replaceChildren(...entries.map(createBarElement));
         requestAnimationFrame(() => {
             for (let i = 0; i < entries.length; i++) {
@@ -342,6 +346,7 @@ function updateUsageBars(entries) {
 function createBarElement(entry) {
     const div = document.createElement('div');
     div.className = 'usage-entry';
+    div.dataset.key = entry.key;
 
     const header = document.createElement('div');
     header.className = 'bar-header';
@@ -401,7 +406,7 @@ function updateBarElement(div, entry) {
             marker.className = 'bar-marker';
             container.appendChild(marker);
         }
-        marker.style.left = `${entry.marker_rel * 100}%`;
+        marker.style.left = `calc(${entry.marker_rel * 100}% - 1px)`;
     } else if (marker) {
         marker.remove();
     }
@@ -410,7 +415,7 @@ function updateBarElement(div, entry) {
     for (const pos of entry.dividers) {
         const d = document.createElement('div');
         d.className = 'bar-divider';
-        d.style.left = `${pos * 100}%`;
+        d.style.left = `calc(${pos * 100}% - 1px)`;
         container.appendChild(d);
     }
 

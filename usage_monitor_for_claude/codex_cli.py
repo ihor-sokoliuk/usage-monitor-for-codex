@@ -94,25 +94,28 @@ def find_installations() -> list[CodexInstallation]:
             results.append(CodexInstallation('CLI', version, CODEX_CLI_PATH))
 
     for ide_name, extension_directory in _EXTENSION_DIRS:
-        if not extension_directory.is_dir():
-            continue
+        try:
+            if not extension_directory.is_dir():
+                continue
 
-        best_version = ''
-        best_parts: tuple[int, ...] = ()
-        best_path = None
-        for entry in extension_directory.iterdir():
-            if not entry.is_dir() or not entry.name.startswith(_EXTENSION_PREFIX):
-                continue
-            remainder = entry.name[len(_EXTENSION_PREFIX):]
-            match = re.match(r'(\d+\.\d+\.\d+)', remainder)
-            if not match:
-                continue
-            version = match.group(1)
-            parts = tuple(int(part) for part in version.split('.'))
-            if parts > best_parts:
-                best_version = version
-                best_parts = parts
-                best_path = entry
+            best_version = ''
+            best_parts: tuple[int, ...] = ()
+            best_path = None
+            for entry in extension_directory.iterdir():
+                if not entry.is_dir() or not entry.name.startswith(_EXTENSION_PREFIX):
+                    continue
+                remainder = entry.name[len(_EXTENSION_PREFIX):]
+                match = re.match(r'(\d+\.\d+\.\d+)', remainder)
+                if not match:
+                    continue
+                version = match.group(1)
+                parts = tuple(int(part) for part in version.split('.'))
+                if parts > best_parts:
+                    best_version = version
+                    best_parts = parts
+                    best_path = entry
+        except OSError:
+            continue
 
         if best_version and best_path:
             results.append(CodexInstallation(ide_name, best_version, best_path))

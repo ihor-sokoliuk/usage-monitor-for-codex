@@ -311,6 +311,24 @@ class TestFindInstallations(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.codex_cli.cli_version', return_value='')
     @patch('usage_monitor_for_claude.codex_cli.CODEX_CLI_PATH')
+    def test_unreadable_extension_dir_skipped(self, mock_cli_path, _mock_version):
+        """An unreadable extension directory must not break popup discovery."""
+        mock_cli_path.is_file.return_value = False
+        denied_dir = MagicMock()
+        denied_dir.is_dir.return_value = True
+        denied_dir.iterdir.side_effect = PermissionError(13, 'Access is denied')
+
+        with TemporaryDirectory() as tmp:
+            ext_dir = Path(tmp)
+            (ext_dir / 'openai.chatgpt-2.1.69-win32-x64').mkdir()
+            with patch('usage_monitor_for_claude.codex_cli._EXTENSION_DIRS', [('VS Code', denied_dir), ('Cursor', ext_dir)]):
+                result = find_installations()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].name, 'Cursor')
+
+    @patch('usage_monitor_for_claude.codex_cli.cli_version', return_value='')
+    @patch('usage_monitor_for_claude.codex_cli.CODEX_CLI_PATH')
     def test_picks_highest_version(self, mock_cli_path, _mock_version):
         """When multiple extension versions exist, picks the highest."""
         mock_cli_path.is_file.return_value = False

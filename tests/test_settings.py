@@ -133,6 +133,18 @@ class TestLoadSettings(unittest.TestCase):
             result = _load(Path(app_tmp), Path(home_tmp))
         self.assertEqual(result['poll_interval'], 240)
 
+    def test_all_popup_theme_colors_exported(self):
+        for name in ('BG', 'FG', 'FG_DIM', 'FG_HEADING', 'FG_LINK', 'BAR_BG', 'BAR_FG', 'BAR_FG_WARN', 'BAR_DIVIDER', 'BAR_MARKER'):
+            self.assertIn(name, settings_mod.__all__)
+
+    def test_utf8_bom_file_loaded(self):
+        with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
+            expected = {'poll_interval': 300}
+            path = Path(app_tmp) / settings_mod.SETTINGS_FILENAME
+            path.write_bytes(b'\xef\xbb\xbf' + json.dumps(expected).encode('utf-8'))
+            result = _load(Path(app_tmp), Path(home_tmp))
+        self.assertEqual(result, expected)
+
     def test_empty_json_object(self):
         """An empty JSON object is valid and returns empty dict."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
@@ -629,6 +641,21 @@ class TestSettingsValidation(unittest.TestCase):
         result, mock = self._run_validate({'on_reset_command': 'echo hello'})
         self.assertEqual(result['on_reset_command'], ['echo hello'])
         mock.windll.user32.MessageBoxW.assert_not_called()
+
+    def test_command_empty_string_means_not_set(self):
+        result, mock = self._run_validate({'on_double_click_command': ''})
+        self.assertEqual(result['on_double_click_command'], [])
+        mock.windll.user32.MessageBoxW.assert_not_called()
+
+    def test_command_whitespace_string_means_not_set(self):
+        result, mock = self._run_validate({'on_double_click_command': '   '})
+        self.assertEqual(result['on_double_click_command'], [])
+        mock.windll.user32.MessageBoxW.assert_not_called()
+
+    def test_command_list_with_empty_string_dropped(self):
+        result, mock = self._run_validate({'on_reset_command': ['echo hello', '']})
+        self.assertNotIn('on_reset_command', result)
+        mock.windll.user32.MessageBoxW.assert_called_once()
 
     def test_on_reset_command_list_valid(self):
         """Array of strings for on_reset_command passes through."""

@@ -66,5 +66,6 @@
     "status_updated_s": "Actualizado hace {s}s",
     "status_next_update": "Próx. actualiz.: {duration}",
     "status_refreshing": "Actualizando...",
-    "already_running": "Usage Monitor for Codex v{running_version} ya se está ejecutando.\n\n¿Quieres reemplazar la instancia en ejecución?"
+    "already_running": "Usage Monitor for Codex v{running_version} ya se está ejecutando.\n\n¿Quieres reemplazar la instancia en ejecución?",
+    "replace_failed": "No se pudo reemplazar la instancia en ejecución.\n\nCiérrela manualmente e inténtelo de nuevo."
 }
