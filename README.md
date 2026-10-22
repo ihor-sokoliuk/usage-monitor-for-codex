@@ -154,3 +154,5 @@ MIT - see [LICENSE](LICENSE).
 ## Disclaimer
 
 This is an independent, community-built project. It is not created, endorsed, or officially supported by OpenAI. "Codex", "ChatGPT", and "OpenAI" are used descriptively to indicate compatibility and are trademarks of OpenAI.
+
+Weekly pacing can use configurable equal sections; see [configuration](docs/configuration.md#weekly-pacing).

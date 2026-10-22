@@ -216,3 +216,8 @@ Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA ar
   }
 }
 ```
+
+
+## Weekly pacing
+
+By default, weekly bars retain their calendar-day dividers. Set `"weekly_bar_parts": 5` to divide seven-day bars into five equal sections for workweek pacing. Integers from 1 to 31 are accepted; `1` hides internal dividers. Other quota durations are unchanged.
