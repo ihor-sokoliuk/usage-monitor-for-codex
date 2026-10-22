@@ -29,15 +29,7 @@
     "duration_hm": "{h}h {m}m",
     "duration_m": "{m}m",
     "duration_s": "{s}s",
-    "weekdays": [
-        "Mon",
-        "Tue",
-        "Wed",
-        "Thu",
-        "Fri",
-        "Sat",
-        "Sun"
-    ],
+    "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     "loading": "Usage Monitor: Loading...",
     "error_label": "Usage Monitor: Error",
     "connection_error": "Could not communicate with the Codex app-server.",
@@ -67,5 +59,6 @@
     "status_next_update": "Next update in {duration}",
     "status_refreshing": "Refreshing...",
     "already_running": "Usage Monitor for Codex v{running_version} is already running.\n\nDo you want to replace the running instance?",
-    "replace_failed": "The running instance could not be replaced.\n\nPlease close it manually and try again."
+    "replace_failed": "The running instance could not be replaced.\n\nPlease close it manually and try again.",
+    "refresh": "Refresh now"
 }

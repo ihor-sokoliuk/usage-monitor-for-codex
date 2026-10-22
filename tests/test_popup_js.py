@@ -24,12 +24,17 @@ class StubElement {
         this.className = '';
         this.textContent = '';
         this.title = '';
+        this.listeners = {};
+        this.disabled = false;
         this.style = {};
         this.dataset = {};
         this.children = [];
         this.parentNode = null;
         const element = this;
         this.classList = {
+            add(name) { const classes = element._classSet(); classes.add(name); element.className = [...classes].join(' '); },
+            remove(name) { const classes = element._classSet(); classes.delete(name); element.className = [...classes].join(' '); },
+            contains(name) { return element._classSet().has(name); },
             toggle(name, force) {
                 const classes = element._classSet();
                 const on = force === undefined ? !classes.has(name) : !!force;
@@ -40,6 +45,9 @@ class StubElement {
         };
     }
     _classSet() { return new Set(this.className.split(/\s+/).filter(Boolean)); }
+    addEventListener(name, callback) { this.listeners[name] = callback; }
+    setAttribute(name, value) { this[name] = value; }
+    click() { if (this.listeners.click) this.listeners.click(); }
     appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
     append(...nodes) { for (const node of nodes) this.appendChild(node); }
     replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
@@ -155,6 +163,72 @@ console.log(JSON.stringify({
 }));
 ''')
         self.assertEqual(result, {'sameElement': True, 'pct': '50%', 'fillWidth': '50%'})
+
+
+@unittest.skipUnless(_NODE, 'Node.js not available')
+class TestManualRefresh(unittest.TestCase):
+    """Tests for the popup refresh button's async request state."""
+
+    def test_duplicate_click_suppressed_and_success_updates_immediately(self):
+        result = _run_scenario('''
+const refreshBtn = document.createElement('button');
+document.getElementById = (id) => id === 'refreshBtn' ? refreshBtn : null;
+translations = { refresh: 'Refresh' };
+let resolveRefresh;
+let calls = 0;
+let updated = null;
+globalThis.pywebview = { api: { refresh: () => {
+    calls += 1;
+    return new Promise((resolve) => { resolveRefresh = resolve; });
+} } };
+updateData = (data) => { updated = data; };
+setupRefreshButton();
+refreshBtn.click();
+refreshBtn.click();
+const loading = refreshBtn.disabled && refreshBtn.classList.contains('refreshing');
+resolveRefresh({ status: { text: 'fresh' } });
+setTimeout(() => console.log(JSON.stringify({
+    calls, loading, updated, disabled: refreshBtn.disabled,
+    refreshing: refreshBtn.classList.contains('refreshing'),
+    title: refreshBtn.title, ariaLabel: refreshBtn['aria-label'],
+})), 0);
+''')
+        self.assertEqual(result, {
+            'calls': 1,
+            'loading': True,
+            'updated': {'status': {'text': 'fresh'}},
+            'disabled': False,
+            'refreshing': False,
+            'title': 'Refresh',
+            'ariaLabel': 'Refresh',
+        })
+
+    def test_rejection_restores_button_without_replacing_data(self):
+        result = _run_scenario('''
+const refreshBtn = document.createElement('button');
+document.getElementById = (id) => id === 'refreshBtn' ? refreshBtn : null;
+translations = { refresh: 'Refresh' };
+let rejectRefresh;
+let updates = 0;
+globalThis.pywebview = { api: { refresh: () => new Promise((_resolve, reject) => { rejectRefresh = reject; }) } };
+updateData = () => { updates += 1; };
+setupRefreshButton();
+refreshBtn.click();
+const loading = refreshBtn.disabled && refreshBtn.classList.contains('refreshing');
+rejectRefresh(new Error('offline'));
+setTimeout(() => console.log(JSON.stringify({
+    loading, updates, disabled: refreshBtn.disabled,
+    refreshing: refreshBtn.classList.contains('refreshing'),
+})), 0);
+''')
+        self.assertEqual(result, {
+            'loading': True,
+            'updates': 0,
+            'disabled': False,
+            'refreshing': False,
+        })
+
+
 
 
 if __name__ == '__main__':

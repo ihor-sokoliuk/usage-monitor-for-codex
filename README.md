@@ -154,3 +154,5 @@ MIT - see [LICENSE](LICENSE).
 ## Disclaimer
 
 This is an independent, community-built project. It is not created, endorsed, or officially supported by OpenAI. "Codex", "ChatGPT", and "OpenAI" are used descriptively to indicate compatibility and are trademarks of OpenAI.
+
+Refresh usage from the popup button or tray menu without waiting for the next poll. Active rate-limit backoff is still respected.

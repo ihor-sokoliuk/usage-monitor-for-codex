@@ -216,3 +216,8 @@ Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA ar
   }
 }
 ```
+
+
+## Manual refresh
+
+Use **Refresh** in the tray menu or the popup to request an immediate update. It skips the normal successful-fetch cooldown but respects active provider rate-limit backoff. Repeated simultaneous requests share one refresh.
