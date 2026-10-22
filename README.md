@@ -154,3 +154,5 @@ MIT - see [LICENSE](LICENSE).
 ## Disclaimer
 
 This is an independent, community-built project. It is not created, endorsed, or officially supported by OpenAI. "Codex", "ChatGPT", and "OpenAI" are used descriptively to indicate compatibility and are trademarks of OpenAI.
+
+An optional [local usage endpoint](docs/status-endpoint.md) lets local programs read cached usage. It is disabled by default.

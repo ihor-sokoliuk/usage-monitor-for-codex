@@ -24,6 +24,8 @@ from .autostart import is_autostart_enabled, set_autostart, sync_autostart_path
 from .cache import UsageCache
 from .codex_cli import PROJECT_URL
 from .command import run_event_command
+from .settings import STATUS_SERVER_ENABLED, STATUS_SERVER_PORT
+from .status_server import StatusServer
 from .idle import get_idle_seconds, is_workstation_locked
 from .instance_id import effective_config_dir, is_default_config_dir
 from .settings import (
@@ -1013,7 +1015,19 @@ class UsageMonitorForCodex:
             crash_log(traceback.format_exc())
 
     def run(self) -> None:
-        self.icon.run(setup=self._on_icon_ready)
+        status = None
+        try:
+            if STATUS_SERVER_ENABLED:
+                candidate = StatusServer(self.cache, 'codex', 'Codex', STATUS_SERVER_PORT)
+                try:
+                    candidate.start()
+                    status = candidate
+                except OSError:
+                    logging.getLogger(__name__).warning('local usage endpoint could not bind; continuing without it')
+            self.icon.run(setup=self._on_icon_ready)
+        finally:
+            if status is not None:
+                status.shutdown()
 
 
 def crash_log(msg: str) -> None:

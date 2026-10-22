@@ -26,6 +26,7 @@ from pathlib import Path
 from .instance_id import effective_config_dir, is_default_config_dir
 
 __all__ = [
+    'STATUS_SERVER_ENABLED', 'STATUS_SERVER_PORT',
     'ALERT_TIME_AWARE', 'ALERT_TIME_AWARE_BELOW', 'AUTO_UPDATE_CODEX_CLI',
     'BAR_BG', 'BAR_DIVIDER', 'BAR_FG', 'BAR_FG_WARN', 'BAR_MARKER', 'BG',
     'COMPACT_HIDE', 'CURRENCY_SYMBOL',
@@ -44,6 +45,7 @@ _DEFAULT_POLL_INTERVAL = 180
 _DEFAULT_POLL_FAST = 120
 
 _NUMERIC_BOUNDS: dict[str, int] = {
+    'status_server_port': 1024,
     'poll_interval': 1,
     'poll_fast': 1,
     'poll_fast_extra': 1,
@@ -61,7 +63,7 @@ _PERCENT_KEYS = frozenset({'alert_time_aware_below'})
 _STRING_KEYS = frozenset({'currency_symbol', 'language'})
 _VALID_TIME_FORMATS = frozenset({'24h', '12h'})
 _COMMAND_KEYS = frozenset({'on_double_click_command', 'on_reset_command', 'on_startup_command', 'on_threshold_command'})
-_BOOL_KEYS = frozenset({'alert_time_aware', 'auto_update_codex_cli', 'notify_codex_update'})
+_BOOL_KEYS = frozenset({'status_server_enabled', 'alert_time_aware', 'auto_update_codex_cli', 'notify_codex_update'})
 _STRING_LIST_KEYS = frozenset({'tooltip_fields', 'compact_hide'})
 _WILDCARD_STRING_LIST_KEYS = frozenset({'popup_fields'})
 _VALID_BAR_MODES = frozenset({'utilization', 'overage'})
@@ -127,6 +129,10 @@ def _validate(data: dict, path: Path) -> dict:
                 drop.append(key)
             elif value < min_val:
                 errors.append(f'  {key}: must be >= {min_val}, got {value}')
+                drop.append(key)
+
+            elif key == 'status_server_port' and value > 65535:
+                errors.append(f'  {key}: must be <= 65535, got {value}')
                 drop.append(key)
 
         elif key in _COLOR_KEYS:
@@ -421,3 +427,7 @@ def get_alert_thresholds(variant_key: str) -> list[float]:
             return _ALERT_THRESHOLDS[base_key]
 
     return []
+
+
+STATUS_SERVER_ENABLED: bool = _S.get('status_server_enabled', False)
+STATUS_SERVER_PORT: int = _S.get('status_server_port', 45457)

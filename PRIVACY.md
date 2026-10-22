@@ -36,3 +36,8 @@ The packaged runtime, WebView2, Windows, and the spawned Codex child may create 
 
 For privacy questions, open an issue at:
 https://github.com/ihor-sokoliuk/usage-monitor-for-codex/issues
+
+
+## Optional local usage endpoint
+
+When explicitly enabled, the monitor serves cached normalized quotas and generic error state on IPv4 loopback. No profile information, account email, credentials, or raw provider payload is exposed. Other local programs can read this unauthenticated endpoint. Requests do not initiate provider calls. See [the endpoint reference](docs/status-endpoint.md).

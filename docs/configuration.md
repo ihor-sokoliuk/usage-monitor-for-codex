@@ -216,3 +216,8 @@ Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA ar
   }
 }
 ```
+
+
+## Local usage endpoint
+
+`status_server_enabled` defaults to `false`; `status_server_port` defaults to `45457` and accepts integers from 1024 to 65535. See [the endpoint reference](status-endpoint.md) for the response and local-access implications.
