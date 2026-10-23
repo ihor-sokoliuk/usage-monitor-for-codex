@@ -16,7 +16,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ['main']
+__all__ = ['STARTUP_FAILURE_EXIT', 'main']
+
+STARTUP_FAILURE_EXIT = 78
 
 _EOF_GRACE = 0.35
 _TERM_GRACE = 0.5
@@ -150,7 +152,7 @@ def main(arguments: list[str] | None = None) -> int:
     Returns
     -------
     int
-        Zero after complete descendant cleanup, or one for a startup failure.
+        Zero after complete descendant cleanup, or 78 for a pre-spawn failure.
     """
     global _stop_requested
     _stop_requested = False
@@ -162,7 +164,7 @@ def main(arguments: list[str] | None = None) -> int:
         _prepare_supervisor()
     except (OSError, ValueError, IndexError, AttributeError):
         print('codex supervisor: unavailable', file=sys.stderr, flush=True)
-        return 1
+        return STARTUP_FAILURE_EXIT
 
     if _stop_requested:
         return 0
@@ -170,7 +172,7 @@ def main(arguments: list[str] | None = None) -> int:
         child = subprocess.Popen(arguments[1:], close_fds=True)
     except OSError:
         print('codex supervisor: spawn failed', file=sys.stderr, flush=True)
-        return 1
+        return STARTUP_FAILURE_EXIT
 
     # Only descendants retain the JSONL pipes, so their EOF reaches the monitor.
     os.close(0)

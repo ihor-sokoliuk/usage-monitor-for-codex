@@ -343,6 +343,15 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertEqual(result, data)
         mock.assert_not_called()
 
+    def test_container_values_for_enum_settings_are_dropped(self):
+        """Malformed JSON containers produce a warning instead of aborting startup."""
+        for key in ('time_format', 'icon_style'):
+            for value in ([], ['numbers'], {}, {'format': '24h'}):
+                with self.subTest(key=key, value=value):
+                    result, warning = self._run_validate({key: value})
+                    self.assertNotIn(key, result)
+                    warning.assert_called_once()
+
     def test_string_for_numeric_key(self):
         """String value for numeric key is dropped."""
         result, mock = self._run_validate({'poll_interval': 'abc'})

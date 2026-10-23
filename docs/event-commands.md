@@ -29,7 +29,7 @@ Relative paths resolve from the EXE directory, or from the repository root when 
 
 Commands run with the same user privileges as the monitor. They are deliberately capable of launching programs, reading or writing files, and using the network. Review every command and script before configuring it; never put secrets directly in the JSON settings file.
 
-Automatic event commands are fire-and-forget with output discarded and no visible console window. Commands launched from the **Test event commands** menu or by the quick action are user-driven: their output is captured, and a nonzero exit displays an error dialog.
+Automatic event commands are fire-and-forget with output discarded and no failure dialog. User-driven commands capture output and print it when they finish. The **Test event commands** menu displays an error dialog for every nonzero exit. A normal quick action shows that dialog only for a nonzero exit within five seconds of launch, when a bad path or arguments are likely; a later failure is printed without a dialog. Waiting and reporting use a background daemon thread, so the tray, popup, and polling remain responsive. Windows automatic commands also suppress a console window.
 
 The monitor's built-in provider path makes no outbound API request. Any network call made by an event command belongs to that user-configured command. For example, this threshold command intentionally sends a request to a third-party service:
 

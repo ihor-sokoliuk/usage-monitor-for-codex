@@ -19,6 +19,7 @@ A lightweight Windows tray app with experimental Linux support. It reads ChatGPT
 - **Automatic session recovery** - requests one app-server refresh per continuous authentication-failure episode and observes subsequent sign-in without reading credential files
 - **Adaptive polling** - normal and active cadences, a reduced away/locked cadence capped at ten minutes, reset alignment, transient-error retries, and bounded child refresh. An uncovered visible popup retains normal cadence
 - **Automatic Codex CLI updates** - the fixed official `codex update` command runs at startup and daily by default; notifications appear only when the installed version changes
+- **Verified helper shutdown** - attempts orderly exit before forced termination and defers replacement or CLI updates when the old helper or its tracked descendants have not exited
 - **Multi-account** - separate instances per Codex home, with the file-store prerequisite below
 - **13 languages** - English, German, French, Spanish, Portuguese, Italian, Japanese, Korean, Hindi, Indonesian, Simplified Chinese, Traditional Chinese, and Ukrainian
 - **[Customizable](docs/configuration.md)** - colors, displayed fields, notifications, polling, rotating logs, CLI updates, and commands
@@ -27,9 +28,9 @@ A lightweight Windows tray app with experimental Linux support. It reads ChatGPT
 
 The built-in monitor makes no outbound provider/API request. Account and usage data flows only over local stdio to a fixed `codex app-server` command; that external Codex child owns its authentication and network activity. The monitor never constructs or inspects a credential-store path, contents, existence, timestamps, or other metadata. Authentication state comes only from `account/read`.
 
-The provider boundary is isolated in [`api.py`](usage_monitor_for_claude/api.py) and [`app_server.py`](usage_monitor_for_claude/app_server.py). Dependencies remain Pillow, pystray, and pywebview, plus system GTK/WebKit integration on Linux. There is no provider HTTP library, hidden execution, dynamic import, encoded endpoint, or minified application logic.
+The provider boundary comprises [`api.py`](usage_monitor_for_claude/api.py), [`app_server.py`](usage_monitor_for_claude/app_server.py), the [Windows process backend](usage_monitor_for_claude/provider_process_windows.py), the [Linux process backend](usage_monitor_for_claude/provider_process_linux.py), and the [Linux supervisor](usage_monitor_for_claude/_linux_supervisor.py). Dependencies remain Pillow, pystray, and pywebview, plus system GTK/WebKit integration on Linux. There is no provider HTTP library, hidden execution, dynamic import, encoded endpoint, or minified application logic.
 
-Each instance writes sanitized rotating logs beside the EXE, or in the source checkout. Logs exclude emails, tokens, credential metadata, raw provider payloads, raw Codex stdout/stderr, and event-command output. Startup fails visibly if the adjacent log cannot be opened.
+Each instance writes sanitized rotating logs beside the EXE, or in the source checkout. They include local helper process IDs and lifecycle outcomes such as confirmed exit or deferred replacement, and exclude emails, tokens, credential metadata, raw provider payloads, raw Codex stdout/stderr, and event-command output. Startup fails visibly if the adjacent log cannot be opened.
 
 pywebview and its browser engine may use loopback and runtime caches. The separately invoked `codex update` may use the network and replace CLI files. **Start at login** writes a Windows Run value or Linux XDG autostart entry. User-configured event commands run with your privileges and may access the network or filesystem. See [PRIVACY.md](PRIVACY.md).
 
@@ -53,7 +54,7 @@ The default instance creates `usage-monitor-for-codex.log` beside the EXE. Custo
 
 ### Linux
 
-Linux support is experimental. Automated tests and a virtual X11/D-Bus smoke do not establish compatibility with real GNOME, KDE, or Wayland sessions. There is no prebuilt Linux binary; the app uses system GTK and WebKit libraries. For Debian/Ubuntu-style distributions:
+Linux support is experimental. The real source application has been exercised with GTK/WebKit and AppIndicator under Xvfb/Openbox and D-Bus, using synthetic provider data with networking disabled. That smoke covered three quota fields, startup and quick-action commands, popup pinning, restart, quit, and owned-child cleanup while an unrelated process survived. It does not establish compatibility with real GNOME, KDE, or Wayland sessions or their tray panels. There is no prebuilt Linux binary; the app uses system GTK and WebKit libraries. For Debian/Ubuntu-style distributions:
 
 ```bash
 sudo apt install python3-venv python3-gi gir1.2-webkit2-4.1 \

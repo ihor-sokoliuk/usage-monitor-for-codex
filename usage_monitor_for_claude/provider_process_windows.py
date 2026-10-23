@@ -1,13 +1,14 @@
-"""Windows kill-on-close Job containment for the Codex provider child."""
+"""Windows Job containment and native exit verification for provider children."""
 from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
-import logging
 
-__all__ = ['assign_kill_on_close_job', 'close_job_handle']
+__all__ = [
+    'assign_kill_on_close_job', 'close_job_handle', 'job_process_ids',
+    'open_job_process', 'terminate_job', 'wait_process_handle',
+]
 
-log = logging.getLogger(__name__)
 _JOB_KILL_ON_CLOSE = 0x00002000
 
 
@@ -56,6 +57,18 @@ _kernel32.AssignProcessToJobObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wi
 _kernel32.AssignProcessToJobObject.restype = ctypes.wintypes.BOOL
 _kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
 _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+_kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+_kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+_kernel32.TerminateJobObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+_kernel32.TerminateJobObject.restype = ctypes.wintypes.BOOL
+_kernel32.QueryInformationJobObject.argtypes = [
+    ctypes.wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.wintypes.DWORD),
+]
+_kernel32.QueryInformationJobObject.restype = ctypes.wintypes.BOOL
+_kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+_kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+_kernel32.IsProcessInJob.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.BOOL)]
+_kernel32.IsProcessInJob.restype = ctypes.wintypes.BOOL
 
 
 def assign_kill_on_close_job(process_handle: int) -> int:
@@ -88,5 +101,58 @@ def assign_kill_on_close_job(process_handle: int) -> int:
 
 def close_job_handle(job: int) -> None:
     if not _kernel32.CloseHandle(job):
-        log.warning('CloseHandle(job) failed with error %s', ctypes.get_last_error())
+        raise OSError(f'CloseHandle(job) failed ({ctypes.get_last_error()})')
+
+
+def wait_process_handle(handle: int, timeout: float) -> bool:
+    """Wait for kernel process completion independently of a cached exit code."""
+    result = _kernel32.WaitForSingleObject(handle, max(0, int(timeout * 1000)))
+    if result == 0:
+        return True
+    if result == 258:  # WAIT_TIMEOUT
+        return False
+    raise OSError(f'process handle wait failed ({ctypes.get_last_error()})')
+
+
+def terminate_job(job: int) -> None:
+    """Request termination while retaining the Job handle for exit verification."""
+    if not _kernel32.TerminateJobObject(job, 1):
+        raise OSError(f'TerminateJobObject failed ({ctypes.get_last_error()})')
+
+
+def job_process_ids(job: int) -> list[int]:
+    """Read a complete, bounded snapshot of the Job and its nested processes."""
+    capacity = 16
+    while capacity <= 4096:
+        header_size = 2 * ctypes.sizeof(ctypes.wintypes.DWORD)
+        buffer = ctypes.create_string_buffer(header_size + capacity * ctypes.sizeof(ctypes.c_size_t))
+        success = _kernel32.QueryInformationJobObject(job, 3, buffer, len(buffer), None)
+        assigned, returned = (ctypes.wintypes.DWORD * 2).from_buffer(buffer)
+        if success and returned <= assigned <= capacity:
+            values = (ctypes.c_size_t * returned).from_buffer(buffer, header_size)
+            if returned == assigned:
+                return list(values)
+        elif not success and ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+            raise OSError(f'QueryInformationJobObject failed ({ctypes.get_last_error()})')
+        capacity = max(capacity * 2, assigned)
+    raise OSError('Job process list exceeds shutdown tracking limit')
+
+
+def open_job_process(job: int, pid: int) -> int | None:
+    """Retain a member's wait handle, rejecting a PID reused outside the Job."""
+    handle = _kernel32.OpenProcess(0x00101000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        error_code = ctypes.get_last_error()
+        if error_code == 87:  # ERROR_INVALID_PARAMETER: process no longer exists
+            return None
+        raise OSError(f'OpenProcess(job member) failed ({error_code})')
+    belongs = ctypes.wintypes.BOOL()
+    if not _kernel32.IsProcessInJob(handle, job, ctypes.byref(belongs)):
+        error_code = ctypes.get_last_error()
+        _kernel32.CloseHandle(handle)
+        raise OSError(f'IsProcessInJob failed ({error_code})')
+    if not belongs.value:
+        _kernel32.CloseHandle(handle)
+        return None
+    return int(handle)
 

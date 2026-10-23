@@ -738,6 +738,11 @@ class UsageMonitorForCodex:
             'USAGE_MONITOR_VARIANT': variant,
             'USAGE_MONITOR_UTILIZATION': str(round(pct)),
             'USAGE_MONITOR_PREV_UTILIZATION': str(round(prev_pct)),
+            # These legacy pairs remain defined even when Codex omits the windows.
+            'USAGE_MONITOR_UTILIZATION_FIVE_HOUR': '0',
+            'USAGE_MONITOR_RESETS_AT_FIVE_HOUR': '',
+            'USAGE_MONITOR_UTILIZATION_SEVEN_DAY': '0',
+            'USAGE_MONITOR_RESETS_AT_SEVEN_DAY': '',
             **self._quota_snapshot_env(data),
             'USAGE_MONITOR_RESETS_AT': entry.get('resets_at') or '',
             'USAGE_MONITOR_TITLE': T['notify_reset_title'],

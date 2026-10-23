@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .api import fetch_provider_data, refresh_profile as adapter_refresh_profile, shutdown_transport
+from .app_server import TransportError
 from .codex_cli import CliUpdateResult, update_cli
 from .i18n import T
 from .settings import MAX_BACKOFF, POLL_FAST, POLL_INTERVAL
@@ -168,7 +169,11 @@ class UsageCache:
     def update_codex_cli(self) -> CliUpdateResult:
         """Stop provider operations and run the official Codex self-updater."""
         with self._lock:
-            shutdown_transport()
+            try:
+                shutdown_transport()
+            except TransportError:
+                log.warning('codex update deferred; child exit is unconfirmed')
+                return CliUpdateResult(False, False, '', '', 'App-server shutdown incomplete')
             return update_cli()
 
     def update(self, *, force: bool = False) -> UpdateResult:

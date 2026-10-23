@@ -1732,6 +1732,28 @@ class TestResetCommand(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.app.ON_RESET_COMMAND', ['echo reset'])
     @patch('usage_monitor_for_claude.app.run_event_command')
+    def test_reset_snapshot_keeps_legacy_defaults_and_dynamic_fields(self, mock_cmd):
+        """Reset hooks retain legacy pairs while including arbitrary quota fields."""
+        for legacy in ({}, {'five_hour': None, 'seven_day': {'utilization': None}}):
+            with self.subTest(legacy=legacy):
+                data = {**legacy, 'synthetic_model': {'utilization': 17, 'resets_at': None}}
+                self.app._run_reset_command('synthetic_model', 17, 95, data=data, entry=data['synthetic_model'])
+                env = mock_cmd.call_args.args[1]
+                for field in ('FIVE_HOUR', 'SEVEN_DAY'):
+                    self.assertEqual(env[f'USAGE_MONITOR_UTILIZATION_{field}'], '0')
+                    self.assertEqual(env[f'USAGE_MONITOR_RESETS_AT_{field}'], '')
+                self.assertEqual(env['USAGE_MONITOR_UTILIZATION_SYNTHETIC_MODEL'], '17')
+                self.assertEqual(env['USAGE_MONITOR_RESETS_AT_SYNTHETIC_MODEL'], '')
+
+        data = {'seven_day': {'utilization': 1, 'resets_at': '2026-10-25T00:00:00Z'}}
+        self.app._run_reset_command('seven_day', 1, 95, data=data, entry=data['seven_day'])
+        env = mock_cmd.call_args.args[1]
+        self.assertEqual(env['USAGE_MONITOR_UTILIZATION_FIVE_HOUR'], '0')
+        self.assertEqual(env['USAGE_MONITOR_UTILIZATION_SEVEN_DAY'], '1')
+        self.assertEqual(env['USAGE_MONITOR_RESETS_AT_SEVEN_DAY'], '2026-10-25T00:00:00Z')
+
+    @patch('usage_monitor_for_claude.app.ON_RESET_COMMAND', ['echo reset'])
+    @patch('usage_monitor_for_claude.app.run_event_command')
     @patch('usage_monitor_for_claude.app.format_tooltip', return_value='tooltip')
     @patch('usage_monitor_for_claude.app.create_icon_image')
     def test_reset_command_fires_on_5h_drop(self, _icon, _tooltip, mock_cmd):

@@ -26,16 +26,16 @@ Apply Python best practices and clean-code principles. Change only what the task
 - The canonical setting is `quick_action_command`; `on_double_click_command` is a compatibility alias. An explicitly present new key takes precedence even when empty. Normal actions emit `USAGE_MONITOR_EVENT=quick_action`.
 - Windows uses double-click handling; Linux exposes **Run Quick Action** in its tray menu because some desktops retain the click.
 
-- pystray has no native double-click support. When a quick-action command is configured, `_install_double_click_handler()` replaces the matching private `WM_NOTIFY` handler with `_on_tray_message`.
-- With a double-click command, defer a single click by `GetDoubleClickTime()`, cancel it on the double-click, and swallow the trailing `WM_LBUTTONUP`. Guard all click state with `_click_lock`.
-- Without a double-click command, do not install the handler; the immediate upstream single-click behavior must remain unchanged.
-- Unhandled tray messages, including right-click menu behavior, must fall through to the saved pystray handler.
+- pystray has no native double-click support. `platforms.win32.install_tray_click_handler()` finds the private `WM_NOTIFY` handler by identity and replaces it with the backend's dispatcher when a quick action is configured.
+- The Windows handler defers a single click by `double_click_seconds()`, cancels it on a double-click, and swallows the trailing `WM_LBUTTONUP`. Its closure-local lock guards the pending timer and trailing-release state.
+- Without a quick-action command, do not install the handler; immediate upstream single-click behavior remains unchanged.
+- Unhandled tray messages, including right-click menu behavior, fall through to the saved pystray handler.
 
 ## Event commands
 
 - Event commands are an explicit user-controlled execution surface; they are not part of the provider network boundary.
 - Automatic events (`on_reset_command`, `on_threshold_command`, `on_startup_command`) run fire-and-forget with output discarded and must never display a failure dialog.
-- User-driven actions (the test menu and `quick_action_command`) use `capture_output=True`, print captured output, and show a dialog for nonzero exit.
+- User-driven actions use `capture_output=True` and print captured output. The test menu reports every nonzero exit in a dialog. Normal quick actions pass `report_late_failures=False`: only a nonzero exit within the five-second startup window opens a dialog; later failures are printed without a dialog.
 - Captured commands wait on a daemon thread so tray, popup, and poll threads are never blocked.
 - New event commands must be classified as automatic/background or user-driven and follow the corresponding failure behavior.
 
@@ -82,14 +82,14 @@ Apply Python best practices and clean-code principles. Change only what the task
 - Notify only when the installed CLI version actually changes. Update failures are logged without raw subprocess output and retry only after the configured interval.
 - Write the default instance's `usage-monitor-for-codex.log` beside the frozen executable, or in the project root in source mode. Custom Codex homes add `config_dir_suffix()` so concurrent instances never share a rotating file. Use size-based rotation with user-configurable size and retained backup count.
 - Startup must fail visibly if the adjacent log cannot be opened. Do not silently fall back to a different directory.
-- Logs may contain sanitized system/runtime diagnostics, fixed provider method names, timings, utilization summaries, classifications, update versions, and tracebacks. Never log raw provider payloads, tokens, credentials or credential metadata, emails, raw Codex stdout/stderr, or event-command output.
+- Logs may contain sanitized system/runtime diagnostics, helper process IDs and generations, lifecycle reasons/outcomes and elapsed shutdown times, fixed provider method names, timings, utilization summaries, classifications, update versions, and tracebacks. Never log raw provider payloads, tokens, credentials or credential metadata, emails, raw Codex stdout/stderr, or event-command output.
 
 ## Security and transparency
 
 - The built-in monitor makes no outbound provider/API request. Provider account/usage data flows only through the local app-server child over stdio; the Codex child owns its own authentication and network behavior. The separately invoked official `codex update` command may use the network and replace Codex installation files.
 - pywebview/WebView2 or GTK/WebKit may use local loopback/runtime caches. User-configured event commands may access the network or filesystem. Keep these caveats in README and privacy claims.
 - Monitor code must not access a Codex credential store in any way: no contents, path construction, existence check, timestamp, watcher, or metadata. Auth state comes only from the app-server account read.
-- The provider security boundary is isolated in `api.py` (adapter/classification) and `app_server.py` (transport/lifecycle). Other subprocess surfaces such as event commands remain isolated in their dedicated modules.
+- The provider security boundary comprises `api.py` (adapter/classification), `app_server.py` (transport/operation lifecycle), `provider_process_windows.py` (Windows Job ownership), `provider_process_linux.py` (Linux supervisor integration), and `_linux_supervisor.py` (Linux descendant containment/reaping). Other subprocess surfaces such as event commands remain isolated in their dedicated modules.
 - Keep provider method names fixed and auditable. Do not dynamically construct endpoints or methods.
 - No `eval()`, `exec()`, `compile()`, dynamic imports, obfuscation, encoded endpoints, or hidden/minified logic.
 - Pure data files remain separate from logic.

@@ -6,6 +6,8 @@ This project is a fork of Jens Duttke's [Usage Monitor for Claude](https://githu
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-10-23
+
 ### Added
 
 - Experimental Linux source launcher, GTK/WebKit popup, tray integration, per-home autostart and ownership identities, with supervised Codex child cleanup on pidfd-capable kernels.
@@ -15,12 +17,17 @@ This project is a fork of Jens Duttke's [Usage Monitor for Claude](https://githu
 
 ### Changed
 
+- Align the Codex monitor version with upstream v1.24.0 while retaining the distinct Codex product and release namespace.
 - Idle or locked sessions keep polling at a reduced cadence capped at ten minutes; an uncovered visible popup retains normal cadence, and private notifications remain deferred while lock state is unknown.
 - `quick_action_command` replaces the double-click setting while retaining `on_double_click_command` as an alias; normal actions now emit `USAGE_MONITOR_EVENT=quick_action`, so scripts matching the old `double_click` value must be updated.
 - Reconcile the full upstream platform/UI tree through v1.24.0 and popup exclusions while preserving the Codex app-server-only provider boundary and arbitrary quota windows.
 
 ### Fixed
 
+- Reset commands retain the five-hour and weekly compatibility variables when those windows are absent, alongside all detected quota fields.
+- Malformed icon-style or clock-format settings show a configuration warning instead of preventing startup.
+- Codex helper replacement attempts orderly shutdown, confirms helper and observed descendants have exited, and defers replacement or CLI updates when cleanup is incomplete. Forced termination remains bounded and lifecycle diagnostics stay sanitized.
+- Incomplete helper shutdown no longer aborts scheduled polling.
 - Retain upstream fixes for reusable Linux popup windows, panel anchoring, X11 scaling, pointer-sized Windows hook results, caller output redirection, and reset events without an active window.
 
 ## [1.20.0] - 2026-07-19

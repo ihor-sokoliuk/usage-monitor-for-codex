@@ -7,7 +7,9 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ['ControlPipe', 'spawn_supervised']
+from ._linux_supervisor import STARTUP_FAILURE_EXIT
+
+__all__ = ['STARTUP_FAILURE_EXIT', 'ControlPipe', 'spawn_supervised']
 
 
 class ControlPipe:
@@ -48,7 +50,7 @@ def spawn_supervised(command: list[str], environment: dict[str, str]) -> tuple[s
         process = subprocess.Popen(
             [sys.executable, str(supervisor), str(read_descriptor), *command],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding='utf-8', errors='replace', env=environment,
+            text=True, encoding='utf-8', errors='replace', bufsize=0, env=environment,
             close_fds=True, pass_fds=(read_descriptor,), start_new_session=True,
         )
     except BaseException:

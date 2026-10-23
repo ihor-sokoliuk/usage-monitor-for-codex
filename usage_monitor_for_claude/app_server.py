@@ -33,12 +33,18 @@ __all__ = ['CHILD_TTL', 'INIT_TIMEOUT', 'RPC_TIMEOUT', 'AppServerTransport', 'Co
 CHILD_TTL = 600
 INIT_TIMEOUT = 30
 RPC_TIMEOUT = 10
+SHUTDOWN_GRACE = 2.0
+SHUTDOWN_TIMEOUT = 5.0
+CLEANUP_RETRY_DELAY = 30.0
 
 log = logging.getLogger(__name__)
 
 STDERR_RING_SIZE = 20
 IS_WINDOWS = sys.platform == 'win32'
 T_ = TypeVar('T_')
+
+if IS_WINDOWS:
+    from .provider_process_windows import _kernel32, ctypes
 
 
 class TransportError(Exception):
@@ -120,7 +126,45 @@ def _assign_kill_on_close_job(process_handle: int) -> int:
 
 def _close_job_handle(job: int) -> None:
     from .provider_process_windows import close_job_handle
-    close_job_handle(job)
+    try:
+        close_job_handle(job)
+    except OSError as error:
+        raise TransportError(str(error)) from error
+
+
+def _wait_process_handle(handle: int, timeout: float) -> bool:
+    """Confirm native process completion without trusting a cached exit code."""
+    from .provider_process_windows import wait_process_handle
+    try:
+        return wait_process_handle(handle, timeout)
+    except OSError as error:
+        raise TransportError(str(error)) from error
+
+
+def _terminate_job(job: int) -> None:
+    from .provider_process_windows import terminate_job
+    try:
+        terminate_job(job)
+    except OSError as error:
+        raise TransportError(str(error)) from error
+
+
+def _job_process_ids(job: int) -> list[int]:
+    """Read a complete native containment snapshot for exit tracking."""
+    from .provider_process_windows import job_process_ids
+    try:
+        return job_process_ids(job)
+    except OSError as error:
+        raise TransportError(str(error)) from error
+
+
+def _open_job_process(job: int, pid: int) -> int | None:
+    """Retain a wait handle only for a current member of the child Job."""
+    from .provider_process_windows import open_job_process
+    try:
+        return open_job_process(job, pid)
+    except OSError as error:
+        raise TransportError(str(error)) from error
 
 
 def _redact(line: str) -> str:
@@ -132,25 +176,6 @@ def _redact(line: str) -> str:
         if variant:
             redacted = re.sub(re.escape(variant), '~', redacted, flags=re.IGNORECASE)
     return re.sub(r'[A-Za-z0-9_\-\.=\/+]{24,}', '***', redacted.rstrip('\n'))
-
-
-def _terminate_uninstalled_child(process: subprocess.Popen) -> None:
-    """Fully reap a child that failed before installation on the transport."""
-    try:
-        if process.poll() is None:
-            process.kill()
-    except OSError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
 
 
 class _Pending:
@@ -204,6 +229,9 @@ class AppServerTransport:
         self._pending: dict[int | str, _Pending] = {}
         self._auth_revision = 0
         self._stderr_ring: deque[str] = deque(maxlen=STDERR_RING_SIZE)
+        self._reader_threads: list[threading.Thread] = []
+        self._exit_handles: dict[int, int] = {}
+        self._cleanup_retry_at = 0.0
 
     def run_operation(self, body: Callable[[_OperationHandle], T_]) -> T_:
         """Run one generation-atomic provider operation, retrying once after transport failure."""
@@ -216,7 +244,7 @@ class AppServerTransport:
                 try:
                     return body(operation)
                 except TransportError:
-                    self._kill_child()
+                    self._kill_child(reason='transport failure', graceful=False)
                     if attempt == 1:
                         raise
                     self._ensure_child()
@@ -231,11 +259,11 @@ class AppServerTransport:
     def force_restart(self) -> None:
         """Terminate the child so the next operation creates a fresh generation."""
         with self._op_lock:
-            self._kill_child()
+            self._kill_child(reason='requested restart')
 
     def shutdown(self) -> None:
         with self._op_lock:
-            self._kill_child()
+            self._kill_child(reason='shutdown')
 
     def stderr_tail(self) -> list[str]:
         with self._state_lock:
@@ -247,7 +275,7 @@ class AppServerTransport:
             expired = alive and time.monotonic() - self._child_started_at > self._child_ttl
         if alive and not expired:
             return
-        self._kill_child()
+        self._kill_child(reason='ttl expired' if expired else 'child unavailable', graceful=alive)
         self._spawn()
 
     def _spawn(self) -> None:
@@ -256,20 +284,14 @@ class AppServerTransport:
         if self._codex_home:
             environment['CODEX_HOME'] = self._codex_home
 
-        job = None
         control = None
         try:
             if IS_WINDOWS:
                 process = subprocess.Popen(
                     command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding='utf-8', errors='replace', env=environment,
+                    text=True, encoding='utf-8', errors='replace', bufsize=0, env=environment,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                try:
-                    job = _assign_kill_on_close_job(int(process._handle))  # type: ignore[attr-defined]  # Native Job requires Popen's Win32 handle.
-                except TransportError:
-                    _terminate_uninstalled_child(process)
-                    raise
             else:
                 from .provider_process_linux import spawn_supervised
                 process, control = spawn_supervised(command, environment)
@@ -279,18 +301,29 @@ class AppServerTransport:
 
         with self._state_lock:
             self._proc = process
-            self._job_handle = job
             self._linux_control = control
             self._generation += 1
-            self._dead = False
             self._child_started_at = time.monotonic()
             generation = self._generation
 
-        threading.Thread(target=self._reader, args=(process, generation), daemon=True).start()
-        threading.Thread(target=self._drain_stderr, args=(process, generation), daemon=True).start()
+        job = None
+        if IS_WINDOWS:
+            try:
+                job = _assign_kill_on_close_job(int(process._handle))  # type: ignore[attr-defined]  # Native Job requires Popen's Win32 handle.
+            except TransportError:
+                self._kill_child(reason='job assignment failed', graceful=False)
+                raise
 
+        with self._state_lock:
+            self._job_handle = job
+            self._dead = False
+        log.info('child started (generation=%s, pid=%s)', generation, process.pid)
         from . import __version__
         try:
+            for target in (self._reader, self._drain_stderr):
+                reader = threading.Thread(target=target, args=(process, generation), daemon=True)
+                reader.start()
+                self._reader_threads.append(reader)
             initialize_result = self._request(
                 generation,
                 'initialize',
@@ -299,18 +332,65 @@ class AppServerTransport:
             )
             log.info('initialize -> OK (%s)', type(initialize_result).__name__)
             self._write_line(json.dumps({'method': 'initialized', 'params': {}}), generation, process)
-        except (TransportError, RpcError) as exc:
-            self._kill_child()
-            raise TransportError(f'handshake failed: {exc}') from exc
+        except (TransportError, RpcError, RuntimeError, OSError) as exc:
+            self._kill_child(reason='handshake failed', graceful=False)
+            raise TransportError('child initialization failed') from exc
 
-    def _kill_child(self) -> None:
+    def _close_stdin(self, process: subprocess.Popen, timeout: float) -> bool:
+        """Attempt EOF without waiting indefinitely for an outstanding pipe writer."""
+        if not self._stdin_lock.acquire(timeout=timeout):
+            return False
+        try:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except (OSError, ValueError):
+                    pass
+            return True
+        finally:
+            self._stdin_lock.release()
+
+    def _capture_exit_handles(self, process: subprocess.Popen, job: int | None) -> list[int]:
+        """Retain descendant handles before requesting exit and during draining."""
+        if job is None:
+            return []
+        pids = _job_process_ids(job)
+        for pid in pids:
+            if pid == process.pid or pid in self._exit_handles:
+                continue
+            handle = _open_job_process(job, pid)
+            if handle is not None:
+                self._exit_handles[pid] = handle
+        return pids
+
+    def _wait_for_exit(self, process: subprocess.Popen, job: int | None, timeout: float) -> bool:
+        """Require signaled process handles and an empty Job within one deadline."""
+        deadline = time.monotonic() + timeout
+        while True:
+            pids = self._capture_exit_handles(process, job)
+            handles = [int(process._handle), *self._exit_handles.values()]  # type: ignore[attr-defined]  # Bypass Popen's cached returncode
+            waiting = [handle for handle in handles if not _wait_process_handle(handle, 0)]
+            if not waiting and not pids:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            interval = min(0.05, remaining)
+            if waiting:
+                _wait_process_handle(waiting[0], interval)
+            else:
+                time.sleep(interval)
+
+    def _kill_child(self, *, reason: str = 'cleanup', graceful: bool = True) -> None:
+        """Retire one generation, retaining ownership if exit cannot be confirmed.
+
+        The caller holds the operation lock. Reader threads only mark failure;
+        they never close Job handles or terminate processes independently.
+        """
         with self._state_lock:
             process = self._proc
             job = self._job_handle
             control = self._linux_control
-            self._linux_control = None
-            self._proc = None
-            self._job_handle = None
             self._dead = True
             pending_requests = list(self._pending.values())
             self._pending.clear()
@@ -318,56 +398,68 @@ class AppServerTransport:
             pending.response = None
             pending.event.set()
 
-        if control is not None:
-            # EOF is kernel-delivered even when another thread is blocked writing stdin.
-            stdin_locked = self._stdin_lock.acquire(blocking=False)
-            try:
-                if stdin_locked and process is not None and process.stdin is not None:
-                    process.stdin.close()
-            except (OSError, ValueError):
-                pass
-            finally:
-                if stdin_locked:
-                    self._stdin_lock.release()
-                control.close()
-            if process is not None:
-                try:
-                    process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired) as error:
-                    with self._state_lock:
-                        self._proc = process
-                        self._linux_control = control
-                    raise TransportError('supervisor cleanup did not finish') from error
-                with self._stdin_lock:
-                    for stream in (process.stdin, process.stdout, process.stderr):
-                        if stream is not None:
-                            try:
-                                stream.close()
-                            except (OSError, ValueError):
-                                pass
-            return
-        if job is not None:
-            _close_job_handle(job)
         if process is None:
             return
+        if time.monotonic() < self._cleanup_retry_at:
+            raise TransportError('previous child exit is unconfirmed; cleanup retry deferred')
 
+        started = time.monotonic()
+        method = 'graceful' if graceful else 'forced'
+        log.info('child stopping (generation=%s, pid=%s, reason=%s)', self._generation, process.pid, reason)
         try:
-            if process.poll() is None:
-                process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        with self._stdin_lock:
-            streams = (process.stdin, process.stdout, process.stderr)
-            for stream in streams:
+            if control is not None:
+                from .provider_process_linux import STARTUP_FAILURE_EXIT
+                # Deliver liveness EOF before attempting any potentially busy pipe lock.
+                control.close()
+                self._close_stdin(process, 0)
+                return_code = process.wait(timeout=SHUTDOWN_TIMEOUT)
+                if return_code not in (0, STARTUP_FAILURE_EXIT):
+                    raise TransportError('supervisor exit cannot confirm descendant cleanup')
+            else:
+                self._capture_exit_handles(process, job)
+                # Unbuffered stdin has no pending user-space data to flush on close.
+                eof_sent = self._close_stdin(process, SHUTDOWN_GRACE if graceful else 0)
+                exited = self._wait_for_exit(process, job, SHUTDOWN_GRACE if graceful and eof_sent else 0)
+                if not exited:
+                    method = 'forced'
+                    log.info('child termination requested (generation=%s, pid=%s)', self._generation, process.pid)
+                    if job is not None:
+                        _terminate_job(job)
+                    else:
+                        process.kill()
+                    if not self._wait_for_exit(process, job, SHUTDOWN_TIMEOUT):
+                        raise TransportError('child process handles did not signal before shutdown deadline')
+
+            # The platform wait above confirms completion before releasing ownership.
+            process.wait(timeout=0)
+            for reader in self._reader_threads:
+                reader.join(timeout=1)
+            if any(reader.is_alive() for reader in self._reader_threads):
+                raise TransportError('child pipe readers have not finished')
+            if not self._close_stdin(process, 0):
+                raise TransportError('child stdin writer has not finished')
+            for stream in (process.stdout, process.stderr):
                 if stream is not None:
-                    try:
-                        stream.close()
-                    except OSError:
-                        pass
+                    stream.close()
+            if job is not None:
+                _close_job_handle(job)
+        except (TransportError, OSError, subprocess.TimeoutExpired) as error:
+            self._cleanup_retry_at = time.monotonic() + CLEANUP_RETRY_DELAY
+            log.warning('child exit unconfirmed; replacement deferred (generation=%s, pid=%s, failure=%s)',
+                        self._generation, process.pid, type(error).__name__)
+            raise TransportError('child cleanup incomplete; replacement deferred') from error
+
+        for handle in self._exit_handles.values():
+            _kernel32.CloseHandle(handle)
+        self._exit_handles.clear()
+        self._reader_threads.clear()
+        self._cleanup_retry_at = 0.0
+        with self._state_lock:
+            self._proc = None
+            self._job_handle = None
+            self._linux_control = None
+        log.info('child exit confirmed (generation=%s, pid=%s, method=%s, elapsed=%.2fs)',
+                 self._generation, process.pid, method, time.monotonic() - started)
 
     def _write_line(self, line: str, generation: int, process: subprocess.Popen) -> None:
         with self._stdin_lock:
@@ -378,7 +470,16 @@ class AppServerTransport:
             if stdin is None:
                 raise TransportError('child stdin unavailable')
             try:
-                stdin.write(line + '\n')
+                payload = (line + '\n').encode('utf-8')
+                offset = 0
+                while offset < len(payload):
+                    with self._state_lock:
+                        if generation != self._generation or process is not self._proc or self._dead:
+                            raise TransportError('child generation changed')
+                    written = stdin.buffer.write(payload[offset:])
+                    if written is None or written <= 0:
+                        raise TransportError('child stdin write made no progress')
+                    offset += written
                 stdin.flush()
             except (OSError, ValueError) as exc:
                 raise TransportError(f'write failed: {exc}') from exc
@@ -404,7 +505,6 @@ class AppServerTransport:
             with self._state_lock:
                 self._pending.pop(request_id, None)
             log.warning('%s -> timeout after %.1fs', method, time.monotonic() - started)
-            self._kill_child()
             raise TransportError(f'{method} timed out')
 
         response = pending.response
@@ -481,32 +581,18 @@ class AppServerTransport:
 
     def _fail_generation(self, process: subprocess.Popen, generation: int) -> None:
         with self._state_lock:
-            if generation != self._generation or process is not self._proc:
+            if generation != self._generation or process is not self._proc or self._dead:
                 return
             self._dead = True
-            job = self._job_handle
-            control = self._linux_control
-            self._job_handle = None
             pending_requests = list(self._pending.values())
             self._pending.clear()
         for pending in pending_requests:
             pending.response = None
             pending.event.set()
-        if control is not None:
-            control.close()
-            return
-        if job is not None:
-            _close_job_handle(job)
-        try:
-            if process.poll() is None:
-                process.kill()
-        except OSError:
-            pass
 
     def _drain_stderr(self, process: subprocess.Popen, generation: int) -> None:
         assert process.stderr is not None
         for line in process.stderr:
             with self._state_lock:
-                if generation != self._generation or process is not self._proc:
-                    return
-                self._stderr_ring.append(_redact(line))
+                if generation == self._generation and process is self._proc and not self._dead:
+                    self._stderr_ring.append(_redact(line))

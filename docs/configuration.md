@@ -129,7 +129,7 @@ Entries can be normalized field names or section keys: `account`, `claude_code`,
 | `icon_fields` | `["five_hour", "seven_day"]` |
 | `icon_style` | `"number+bars"` |
 
-`icon_style` selects `"number+bars"` (percentage and bars) or `"numbers"` (two stacked percentages). In numbers mode, exhausted quotas show `✕`; when both resolved quotas are exhausted the glyph fills the icon. Bar time markers and `:overage` do not affect numbers mode. The idle icon uses the Codex `C`.
+`icon_style` selects `"number+bars"` (percentage and bars) or `"numbers"` (two stacked percentages). In numbers mode, exhausted quotas show `✕`; when both resolved quotas are exhausted the glyph fills the icon. Bar time markers and `:overage` do not affect numbers mode. The idle icon uses the Codex `>_` glyph.
 
 Exactly two `icon_fields` entries are required. Available configured fields are shown first in configured order, then missing entries are replaced with unused detected fields in duration order. This keeps a generic weekly limit above its model-specific weekly variants when no session limit exists. If nothing remains, the slot is empty. A configured `:overage` suffix is preserved only when that field is available; substituted fields use utilization mode.
 
@@ -198,7 +198,7 @@ The first check runs at monitor startup. Later checks run at the configured inte
 
 The default monitor instance creates `usage-monitor-for-codex.log` in the directory containing `UsageMonitorForCodex.exe`, regardless of the current working directory. A custom `--codex-home` instance adds the same stable, non-identifying hash suffix used by its other OS identities, for example `usage-monitor-for-codex_abc123def456.log`; this prevents concurrent accounts from sharing a rotating file. Source runs use the repository root. Rotated files add `.1`, `.2`, and so on. If the directory is not writable, the monitor shows an error and does not start because silently losing diagnostics would make failures unauditable.
 
-The log contains the sanitized diagnostics available from `--verbose`, startup progress, provider method outcomes and timings, summarized utilization percentages, retry/backoff states, Codex CLI update checks, and crashes. It never records tokens, credential-store data, account email addresses, raw provider JSON, raw Codex stdout/stderr, or event-command output. `--verbose` additionally mirrors log activity to a console; it is not required for file logging.
+The log contains the sanitized diagnostics available from `--verbose`, startup progress, local helper process IDs and generation numbers, lifecycle reasons and outcomes, shutdown elapsed times, provider method outcomes and timings, summarized utilization percentages, retry/backoff states, Codex CLI update checks, and crashes. It never records tokens, credential-store data, account email addresses, raw provider JSON, raw Codex stdout/stderr, or event-command output. `--verbose` additionally mirrors log activity to a console; it is not required for file logging.
 
 ## Language and time format
 

@@ -4,13 +4,13 @@
 - Previous complete review point: `a3503e9a49c0028d8c5db6897dcd3964746bdd15`
 - Owner-authorized full-rebase target: `5cbccc5e6f20a03efbc6779cc3c6d8e621acdef2`
 - Original Codex tip: `cbd5996`
-- Fork product version remains `1.20.0`; no release is implied by this migration.
+- Fork product version is `1.24.0`, aligned with upstream at the owner's follow-up request. Publishing source and updating the local application do not imply a release tag or GitHub release.
 
 ## Scope and policy
 
 The owner authorized a complete isolated rebase including Linux on 2026-10-23. This supersedes the earlier selective-only and Windows-only migration policy. Preserve the complete upstream history and use its current platform/UI structure as the foundation. Adapt provider-specific behavior to fixed local Codex app-server stdio. Do not restore credential-store inspection, direct provider HTTP, unsupported billing/prepaid data, upstream application identity, or upstream publication targets.
 
-The migration does not authorize remote publication, a shared-branch rewrite, a release, deployment, or replacement/restart of the running monitor. Preserve the primary checkout and its existing user changes. Future history operations require exact owner authorization.
+The initial migration scope excluded publication and live runtime changes. The owner subsequently authorized source commits and a push to the fork, version alignment with upstream, and replacement of the local running application on 2026-10-23. Preserve the primary checkout and its existing user changes. Publish through a branch and pull request without rewriting published history. A release tag, GitHub release, force-push, or pull-request merge still requires separate authorization.
 
 ## Reconciliation method
 
@@ -26,7 +26,8 @@ The migration does not authorize remote publication, a shared-branch rewrite, a 
 | Upstream | Fork disposition |
 |---|---|
 | `claude_cli.py` and its tests | `codex_cli.py`, Codex discovery/version/update only |
-| Direct provider HTTP in `api.py` | Codex normalization/classification plus local `app_server.py` transport |
+| Direct provider HTTP in `api.py` | Codex normalization/classification in `api.py` and local `app_server.py` transport |
+| Provider process containment | `provider_process_windows.py`, `provider_process_linux.py`, and `_linux_supervisor.py` isolate platform ownership and cleanup |
 | Credential/token refresh machinery | Removed; account state and bounded recovery come from app-server RPCs |
 | `usage_monitor_for_claude.spec` and product icon | Codex spec, executable, and icon |
 | `usage-monitor-for-claude` source launcher | `usage-monitor-for-codex`; internal module remains `usage_monitor_for_claude` |
@@ -49,7 +50,7 @@ The 51 commits after the previous review point through the pin are all represent
 | `d5fc89d` | adapted | fix: refresh usage data immediately after an account switch - Preserve atomic Codex account/usage operations, auth revisions and bounded child refresh. |
 | `1b10ab9` | infrastructure-only | ci: publish new releases to WinGet automatically - Upstream WinGet publisher removed; no fork package registration or token is assumed. |
 | `64fdff8` | adapted | fix: decode Claude CLI output as UTF-8 regardless of the system code page - Decode Codex CLI diagnostics/version output as UTF-8 without logging raw output. |
-| `87d89b2` | infrastructure-only | chore: release v1.21.0 - Retain historical upstream release notes; do not bump fork version. |
+| `87d89b2` | infrastructure-only | chore: release v1.21.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
 | `48b9de7` | infrastructure-only | docs: document the WinGet install path and monitor that channel - Retain historical upstream notes; remove active upstream WinGet installation claims. |
 | `869f51c` | applied | fix: end the replaced instance with a success exit code - Retain complete upstream behavior and relevant regression coverage. |
 | `3e2cfc3` | applied | docs: cut justification prose and duplication from the documentation - Retain complete upstream behavior and relevant regression coverage. |
@@ -59,7 +60,7 @@ The 51 commits after the previous review point through the pin are all represent
 | `8a8df15` | applied | fix: run on_reset_command when the reset quota has no active window - Retain complete upstream behavior and relevant regression coverage. |
 | `b00aede` | adapted | fix: verify TLS certificates against the Windows certificate store - Direct provider HTTP/TLS client and truststore dependency removed; Codex owns networking. |
 | `7030a81` | adapted | fix: restore the Windows test suite after the platform split - Platform tests use their native backend while retaining Codex regressions. |
-| `b5fc52a` | infrastructure-only | chore: release v1.22.0 - Retain historical upstream release notes; do not bump fork version. |
+| `b5fc52a` | infrastructure-only | chore: release v1.22.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
 | `d89df18` | infrastructure-only | chore: add preflight and build verification to the release command - Retain release preflight/verification guidance; fork owner publishes separately. |
 | `4344671` | infrastructure-only | chore: add a temporary token diagnostic workflow - Temporary upstream diagnostic workflow remains historical only. |
 | `3b4a001` | infrastructure-only | chore: trigger the token diagnostic on push - Temporary upstream diagnostic trigger remains historical only. |
@@ -79,7 +80,7 @@ The 51 commits after the previous review point through the pin are all represent
 | `063758d` | adapted | refactor: derive the config directory from instance_id everywhere (#96) - Use Codex-home derivation and per-home identities on both platforms. |
 | `b4a258f` | adapted | docs: log the verbose redaction fix for a symlinked home directory - Retain sanitized path diagnostics without credential metadata. |
 | `62242da` | infrastructure-only | feat: code sign the release EXE - Retain optional local signing and tests; no certificate/public signing claim is assumed. |
-| `987fc00` | infrastructure-only | chore: release v1.23.0 - Retain historical upstream release notes; do not bump fork version. |
+| `987fc00` | infrastructure-only | chore: release v1.23.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
 | `84270bb` | adapted | fix: show windows notifications under the app's own identity - Use distinct Codex notification identity and Codex notification logo. |
 | `07d581d` | applied | feat: open the popup on a left-click on KDE Plasma (#102) - Retain complete upstream behavior and relevant regression coverage. |
 | `4a2cd6e` | applied | fix: open the popup above a bottom panel on Linux (#103) - Retain complete upstream behavior and relevant regression coverage. |
@@ -90,9 +91,15 @@ The 51 commits after the previous review point through the pin are all represent
 | `39886b1` | adapted | docs: show the PowerShell variant for collecting the verbose log - Use Codex diagnostic names and document existing adjacent sanitized logs. |
 | `5f27127` | applied | fix: size the popup to the scale WebKit renders at on X11 (#107) - Retain complete upstream behavior and relevant regression coverage. |
 | `6c176f1` | dormant | perf: read the prepaid balance only while the popup is open - No Codex prepaid request exists; lazy upstream billing read is removed. |
-| `31e2b32` | infrastructure-only | chore: release v1.24.0 - Retain historical upstream release notes; do not bump fork version. |
+| `31e2b32` | infrastructure-only | chore: release v1.24.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
 | `045079f` | applied | feat: support popup field exclusions (#113) - Retain complete upstream behavior and relevant regression coverage. |
 | `5cbccc5` | applied | docs: credit the reporter and contributor of popup field exclusions - Retain complete upstream behavior and relevant regression coverage. |
+
+## Full-rebase integration record
+
+The isolated rebase completed at `ca80f5e` with pinned upstream `5cbccc5` retained as an ancestor. Fork commits `aec42db`, `c2869fe`, and `4a5d0af` were skipped during replay because their final changes were already integrated into the reconciled initial port. The original primary branch and checkout were preserved. The owner's pending shutdown change was carried as an uncommitted overlay after independent baseline validation.
+
+Native Windows and Linux baseline suites passed. Linux also exercised the real source module entrypoint with GTK/WebKit, AppIndicator, Xvfb/Openbox and D-Bus inside a network-disabled container. Synthetic provider and notification services supplied three quota fields and exercised startup/quick-action commands, popup pinning, restart, quit, owned-process cleanup, and survival of an unrelated sentinel process. These checks do not validate actual GNOME/KDE/Wayland sessions or desktop-panel interactions; Linux remains experimental. Final overlay verification, Windows frozen smoke, and exact test counts belong to the handoff evidence rather than this inventory.
 
 ## Earlier selective-port history
 

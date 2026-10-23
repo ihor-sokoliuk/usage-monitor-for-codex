@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import usage_monitor_for_claude.app_server as app_server_mod
 from usage_monitor_for_claude.app_server import AppServerTransport, TransportError
 
 CHILD = Path(__file__).with_name('linux_lifecycle_child.py')
@@ -164,7 +165,7 @@ class TestLinuxLifecycle(unittest.TestCase):
         with patch.object(supervisor, '_prepare_supervisor', side_effect=OSError()), \
              patch.object(supervisor.subprocess, 'Popen') as spawn, \
              patch.object(supervisor.sys, 'stderr') as stderr:
-            self.assertEqual(supervisor.main(['17', '/synthetic-codex']), 1)
+            self.assertEqual(supervisor.main(['17', '/synthetic-codex']), 78)
         spawn.assert_not_called()
         self.assertEqual(stderr.write.call_args_list[0].args[0], 'codex supervisor: unavailable')
 
@@ -183,13 +184,14 @@ class TestLinuxLifecycle(unittest.TestCase):
         process = transport._proc
         with patch.object(process, 'wait', side_effect=subprocess.TimeoutExpired('synthetic-supervisor', 5)), \
              patch.object(transport, '_spawn') as spawn:
-            with self.assertRaisesRegex(TransportError, 'cleanup did not finish'):
+            with self.assertRaisesRegex(TransportError, 'cleanup incomplete'):
                 transport.force_restart()
             self.assertIs(transport._proc, process)
             with self.assertRaises(TransportError):
                 transport.run_operation(lambda operation: None)
             spawn.assert_not_called()
-        transport.shutdown()
+        with patch.object(app_server_mod.time, 'monotonic', return_value=time.monotonic() + 60):
+            transport.shutdown()
 
     def test_pidfd_is_closed_when_target_disappears(self):
         from usage_monitor_for_claude import _linux_supervisor as supervisor
