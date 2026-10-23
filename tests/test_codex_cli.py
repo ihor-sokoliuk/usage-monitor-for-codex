@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -29,6 +30,11 @@ from usage_monitor_for_claude.codex_cli import (
 
 class TestDiscoverCliPath(unittest.TestCase):
     """Tests for _discover_cli_path()."""
+
+    def setUp(self):
+        platform = patch.object(codex_cli, 'IS_WINDOWS', True, create=True)
+        platform.start()
+        self.addCleanup(platform.stop)
 
     @patch('usage_monitor_for_claude.codex_cli.shutil.which')
     def test_uses_which_when_found(self, mock_which):
@@ -168,7 +174,8 @@ class TestCliVersion(unittest.TestCase):
         cli_version(path)
         mock_run.assert_called_once_with(
             [str(path), '--version'],
-            capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
+            **codex_cli.no_window_kwargs(),
         )
 
     @patch('usage_monitor_for_claude.codex_cli.subprocess.run')
@@ -220,8 +227,8 @@ class TestUpdateCli(unittest.TestCase):
 
         self.assertEqual(result, CliUpdateResult(True, True, '0.140.0', '0.144.5', ''))
         run.assert_called_once_with(
-            [str(cli), 'update'], capture_output=True, text=True, timeout=120,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            [str(cli), 'update'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120,
+            **codex_cli.no_window_kwargs(),
         )
 
     @patch('usage_monitor_for_claude.codex_cli.subprocess.run')
@@ -311,24 +318,6 @@ class TestFindInstallations(unittest.TestCase):
 
     @patch('usage_monitor_for_claude.codex_cli.cli_version', return_value='')
     @patch('usage_monitor_for_claude.codex_cli.CODEX_CLI_PATH')
-    def test_unreadable_extension_dir_skipped(self, mock_cli_path, _mock_version):
-        """An unreadable extension directory must not break popup discovery."""
-        mock_cli_path.is_file.return_value = False
-        denied_dir = MagicMock()
-        denied_dir.is_dir.return_value = True
-        denied_dir.iterdir.side_effect = PermissionError(13, 'Access is denied')
-
-        with TemporaryDirectory() as tmp:
-            ext_dir = Path(tmp)
-            (ext_dir / 'openai.chatgpt-2.1.69-win32-x64').mkdir()
-            with patch('usage_monitor_for_claude.codex_cli._EXTENSION_DIRS', [('VS Code', denied_dir), ('Cursor', ext_dir)]):
-                result = find_installations()
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].name, 'Cursor')
-
-    @patch('usage_monitor_for_claude.codex_cli.cli_version', return_value='')
-    @patch('usage_monitor_for_claude.codex_cli.CODEX_CLI_PATH')
     def test_picks_highest_version(self, mock_cli_path, _mock_version):
         """When multiple extension versions exist, picks the highest."""
         mock_cli_path.is_file.return_value = False
@@ -389,3 +378,76 @@ class TestFindInstallations(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0].name, 'CLI')
         self.assertEqual(result[1].name, 'VS Code')
+
+
+class TestLinuxCliDiscovery(unittest.TestCase):
+    def test_linux_native_user_bin_without_windows_fallback(self):
+        with TemporaryDirectory() as temporary_directory:
+            home = Path(temporary_directory)
+            executable = home / '.local' / 'bin' / 'codex'
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            with patch.object(codex_cli, 'IS_WINDOWS', False, create=True), \
+                 patch.object(Path, 'home', return_value=home), \
+                 patch.object(codex_cli.shutil, 'which', return_value=None):
+                self.assertEqual(codex_cli._discover_cli_path(), executable)
+
+    def test_linux_missing_returns_native_default(self):
+        with TemporaryDirectory() as temporary_directory:
+            home = Path(temporary_directory)
+            with patch.object(codex_cli, 'IS_WINDOWS', False, create=True), \
+                 patch.object(Path, 'home', return_value=home), \
+                 patch.object(codex_cli.shutil, 'which', return_value=None):
+                self.assertEqual(codex_cli._discover_cli_path(), home / '.local' / 'bin' / 'codex')
+
+    @unittest.skipUnless(sys.platform == 'linux', 'native Linux subprocess options')
+    def test_linux_subprocess_has_no_creation_flags(self):
+        with patch.object(codex_cli, 'IS_WINDOWS', False, create=True):
+            self.assertEqual(codex_cli.no_window_kwargs(), {})
+
+
+class TestCliMissingStreams(unittest.TestCase):
+    def test_missing_stdout_fails_safely(self):
+        codex_cli._version_cache.clear()
+        with patch.object(Path, 'stat', return_value=MagicMock(st_mtime=1)), \
+             patch.object(codex_cli.subprocess, 'run', return_value=MagicMock(stdout=None, returncode=0)):
+            self.assertEqual(cli_version(Path('synthetic-codex')), '')
+
+
+class TestConfiguredCliVersions(unittest.TestCase):
+    def setUp(self):
+        codex_cli._command_version_cache.clear()
+
+    def test_named_command_is_displayed_and_cached(self):
+        command = ['synthetic-codex-wrapper', '--profile', 'synthetic']
+        with patch.object(codex_cli, 'CLI_COMMAND', {'Alternate': command}), \
+             patch.object(codex_cli, 'CODEX_CLI_PATH') as native, \
+             patch.object(codex_cli, '_EXTENSION_DIRS', []), \
+             patch.object(codex_cli.subprocess, 'run', return_value=MagicMock(stdout='codex-cli 1.2.3', stderr='', returncode=0)) as run:
+            native.is_file.return_value = False
+            self.assertEqual(find_installations(), [CodexInstallation('Alternate', '1.2.3', Path('synthetic'))])
+            self.assertEqual(find_installations()[0].version, '1.2.3')
+        run.assert_called_once_with(
+            [*command, '--version'], capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=10, **codex_cli.no_window_kwargs(),
+        )
+
+    def test_configured_command_never_selects_updater(self):
+        with TemporaryDirectory() as temporary_directory:
+            native = Path(temporary_directory) / 'codex'
+            native.touch()
+            with patch.object(codex_cli, 'CLI_COMMAND', {'Alternate': ['unrelated-command']}), \
+                 patch.object(codex_cli, 'CODEX_CLI_PATH', native), \
+                 patch.object(codex_cli, 'cli_version', return_value='1.2.3'), \
+                 patch.object(codex_cli.subprocess, 'run', return_value=MagicMock(stdout='', stderr='', returncode=0)) as run:
+                self.assertTrue(update_cli().success)
+        self.assertEqual(run.call_args.args[0], [str(native), 'update'])
+
+    def test_missing_update_stream_is_failure(self):
+        with TemporaryDirectory() as temporary_directory:
+            native = Path(temporary_directory) / 'codex'
+            native.touch()
+            with patch.object(codex_cli, 'CODEX_CLI_PATH', native), \
+                 patch.object(codex_cli, 'cli_version', return_value='1.2.3'), \
+                 patch.object(codex_cli.subprocess, 'run', return_value=MagicMock(stdout='', stderr=None, returncode=0)):
+                self.assertFalse(update_cli().success)

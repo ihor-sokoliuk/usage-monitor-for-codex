@@ -25,12 +25,12 @@ A separate Codex home isolates settings and child-process state, but an OS keyri
 For each account, open PowerShell and choose a directory that already exists:
 
 ```powershell
-$home = 'C:\CodexHomes\work'
-New-Item -ItemType Directory -Force $home | Out-Null
-$config = Join-Path $home 'config.toml'
+$accountHome = 'C:\CodexHomes\work'
+New-Item -ItemType Directory -Force $accountHome | Out-Null
+$config = Join-Path $accountHome 'config.toml'
 if (-not (Test-Path -LiteralPath $config)) { New-Item -ItemType File -Path $config | Out-Null }
 Start-Process -FilePath notepad.exe -ArgumentList ('"{0}"' -f $config) -Wait
-$env:CODEX_HOME = $home
+$env:CODEX_HOME = $accountHome
 codex login
 codex login status
 Remove-Item Env:CODEX_HOME
@@ -49,7 +49,7 @@ Use ChatGPT browser sign-in, not API-key authentication, because this monitor di
 .\UsageMonitorForCodex.exe --codex-home="C:\CodexHomes\work"
 ```
 
-Each instance gets its own tooltip prefix, settings search root, mutex identity, and autostart entry. `--codex-home` alone is not an account-isolation guarantee unless the file-store prerequisite is met.
+Each instance gets its own tooltip prefix, settings search root, lock or mutex identity, log filename, and autostart entry. On Linux, set `CODEX_HOME` for `codex login`, then pass the same home to `./usage-monitor-for-codex --codex-home="<path>"`. `--codex-home` alone is not an account-isolation guarantee unless the file-store prerequisite is met.
 
 ## Usage field names
 
@@ -98,9 +98,9 @@ The tooltip resolves exactly as many slots as configured. A configured field tha
 
 | Key | Default | Description |
 |---|---|---|
-| `popup_fields` | `["*"]` | Ordered popup fields; `"*"` inserts all remaining active fields |
+| `popup_fields` | `["*"]` | Ordered popup fields; `"*"` inserts all remaining fields and `"-field"` excludes an exact field |
 
-Explicit missing fields are skipped. The wildcard can appear once and preserves duration ordering for the remaining fields.
+Explicit missing fields are skipped. The wildcard can appear once and preserves duration ordering for the remaining fields. Prefix an exact field name with `-` to exclude it, for example `["*", "-seven_day_gpt_5_pro"]`. Exclusions override explicit inclusions regardless of order; unknown exclusions have no effect. A list containing only exclusions displays no bars. Bare `"-"` and `"-*"` are invalid. A valid duration-less Codex window remains displayable; absence of a duration does not mean the quota is inactive.
 
 ```json
 {
@@ -127,8 +127,11 @@ Entries can be normalized field names or section keys: `account`, `claude_code`,
 | Key | Default |
 |---|---|
 | `icon_fields` | `["five_hour", "seven_day"]` |
+| `icon_style` | `"number+bars"` |
 
-Exactly two entries are required. Available configured fields are shown first in configured order, then missing entries are replaced with unused detected fields in duration order. This keeps a generic weekly limit above its model-specific weekly variants when no session limit exists. If nothing remains, the slot is empty. A configured `:overage` suffix is preserved only when that field is available; substituted fields use utilization mode.
+`icon_style` selects `"number+bars"` (percentage and bars) or `"numbers"` (two stacked percentages). In numbers mode, exhausted quotas show `✕`; when both resolved quotas are exhausted the glyph fills the icon. Bar time markers and `:overage` do not affect numbers mode. The idle icon uses the Codex `>_` glyph.
+
+Exactly two `icon_fields` entries are required. Available configured fields are shown first in configured order, then missing entries are replaced with unused detected fields in duration order. This keeps a generic weekly limit above its model-specific weekly variants when no session limit exists. If nothing remains, the slot is empty. A configured `:overage` suffix is preserved only when that field is available; substituted fields use utilization mode.
 
 The tray draws only resolved quota slots. One available quota produces one centered bar; two available quotas produce two bars. An empty slot does not create a gray placeholder line.
 
@@ -152,7 +155,8 @@ Available display modes:
 | `on_reset_command` | none | A detected usage window resets |
 | `on_startup_command` | none | First successful provider update after start/restart |
 | `on_threshold_command` | none | A field crosses a configured alert threshold |
-| `on_double_click_command` | none | Tray icon double-click |
+| `quick_action_command` | none | Tray double-click on Windows, or **Run Quick Action** in the menu |
+| `on_double_click_command` | none | Compatibility alias for `quick_action_command`; the new key takes precedence |
 
 Each value can be one command string or an array of command strings. See [Event Commands](event-commands.md) for execution and data-sharing details.
 
@@ -164,9 +168,10 @@ Each value can be one command string or an array of command strings. See [Event 
 | `poll_fast` | `120` | Minimum successful-fetch spacing and active-use cadence |
 | `poll_fast_extra` | `2` | Extra fast polls after usage stops increasing |
 | `poll_error` | `30` | Cadence after a transient provider/app-server error |
-| `idle_pause` | `300` | Seconds of inactivity before ordinary polling pauses; `0` disables idle pause |
+| `idle_pause` | `300` | Seconds of inactivity before polling slows down; `0` disables inactivity slowdown |
+| `idle_interval` | `600` | Away/locked cadence in seconds, capped at the ten-minute Codex child TTL |
 
-Reset-aligned polls can still run while idle when needed for an `on_reset_command`. During a persistent signed-out or classified authentication-error state, the child is recycled every tenth scheduled error-cadence poll. The ten-minute child TTL independently refreshes healthy and other error states at the next provider-operation boundary.
+A locked workstation slows down immediately. An uncovered visible popup retains normal cadence; the lock screen or screensaver takes priority. Lock/idle detection depends on the Linux desktop session and available D-Bus services; an unknown lock state defers private notifications. Upstream defaults to 900 seconds away; Codex caps this at 600 seconds to bound healthy account-switch staleness. Reset alignment and successful-fetch cooldown still apply while away. Reset-aligned polls can run sooner when needed for an `on_reset_command`. During a persistent signed-out or classified authentication-error state, the child is recycled every tenth scheduled error-cadence poll. The ten-minute child TTL independently refreshes healthy and other error states at the next provider-operation boundary.
 
 `poll_fast` must be less than or equal to `poll_interval`. Conflicting overrides are rejected together so the safe defaults remain active.
 
@@ -180,9 +185,9 @@ Reset-aligned polls can still run while idle when needed for an `on_reset_comman
 | `codex_update_interval` | `86400` | Minimum seconds between update checks; minimum `300` |
 | `notify_codex_update` | `true` | Show a Windows notification when the installed version changes |
 
-The first check runs at monitor startup. Later checks run at the configured interval while the monitor is active. Before updating, the monitor stops its local app-server child and serializes the update against provider reads so Windows can replace the CLI safely. The next provider operation starts a fresh child. A successful check that finds no version change does not notify.
+The first check runs at monitor startup. Later checks run at the configured interval while the monitor is active. Before updating, the monitor stops its local app-server child and serializes the update against provider reads so the CLI is never replaced during a provider operation. The next provider operation starts a fresh child. A successful check that finds no version change does not notify.
 
-`codex update` is part of the installed Codex CLI. It can access the network and replace Codex installation files under the current user's permissions. Set `auto_update_codex_cli` to `false` if another package manager or administrator owns your Codex installation.
+`codex update` is part of the installed Codex CLI. It can access the network and replace Codex installation files under the current user's permissions. Set `auto_update_codex_cli` to `false` if another package manager or administrator owns your Codex installation. If the installed CLI does not support `codex update`, the command fails safely and is retried only after the configured interval. The monitor never elevates or falls back to a different installer.
 
 ## Application log
 
@@ -193,14 +198,14 @@ The first check runs at monitor startup. Later checks run at the configured inte
 
 The default monitor instance creates `usage-monitor-for-codex.log` in the directory containing `UsageMonitorForCodex.exe`, regardless of the current working directory. A custom `--codex-home` instance adds the same stable, non-identifying hash suffix used by its other OS identities, for example `usage-monitor-for-codex_abc123def456.log`; this prevents concurrent accounts from sharing a rotating file. Source runs use the repository root. Rotated files add `.1`, `.2`, and so on. If the directory is not writable, the monitor shows an error and does not start because silently losing diagnostics would make failures unauditable.
 
-The log contains the sanitized diagnostics available from `--verbose`, startup progress, provider method outcomes and timings, summarized utilization percentages, retry/backoff states, Codex CLI update checks, and crashes. It never records tokens, credential-store data, account email addresses, raw provider JSON, raw Codex stdout/stderr, or event-command output. `--verbose` additionally mirrors log activity to a console; it is not required for file logging.
+The log contains the sanitized diagnostics available from `--verbose`, startup progress, local helper process IDs and generation numbers, lifecycle reasons and outcomes, shutdown elapsed times, provider method outcomes and timings, summarized utilization percentages, retry/backoff states, Codex CLI update checks, and crashes. It never records tokens, credential-store data, account email addresses, raw provider JSON, raw Codex stdout/stderr, or event-command output. `--verbose` additionally mirrors log activity to a console; it is not required for file logging.
 
 ## Language and time format
 
 | Key | Default | Values |
 |---|---|---|
-| `language` | Windows display language | `de`, `en`, `es`, `fr`, `hi`, `id`, `it`, `ja`, `ko`, `pt-BR`, `uk`, `zh-CN`, `zh-TW` |
-| `time_format` | Windows regional clock | `"24h"` or `"12h"` |
+| `language` | System display language | `de`, `en`, `es`, `fr`, `hi`, `id`, `it`, `ja`, `ko`, `pt-BR`, `uk`, `zh-CN`, `zh-TW` |
+| `time_format` | System regional clock | `"24h"` or `"12h"` |
 
 ## Colors
 
@@ -216,3 +221,7 @@ Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA ar
   }
 }
 ```
+
+## Dormant upstream compatibility settings
+
+Extra usage, absolute spending alerts, currency, and prepaid balance scaffolding is retained only for upstream compatibility. Codex credits metadata is dropped and cannot activate those views or alerts. These are not supported Codex features. There is no provider TLS setting because provider networking belongs to the external Codex child.

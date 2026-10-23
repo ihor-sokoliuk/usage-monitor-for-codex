@@ -36,6 +36,9 @@ usage-monitor-for-codex-settings.json
 .env.*
 !.env.example
 
+# Code signing - which certificate build.py signs with, on this machine only
+signing.env
+
 # OS
 Thumbs.db
 Desktop.ini

@@ -17,7 +17,7 @@ from .settings import CURRENCY_SYMBOL, TIME_FORMAT, TOOLTIP_FIELDS, _SYSTEM_CURR
 
 __all__ = [
     'divider_positions', 'elapsed_pct', 'expand_popup_fields', 'field_period', 'format_credits',
-    'format_tooltip', 'parse_field_name', 'popup_label', 'resolve_display_fields', 'time_until', 'tooltip_label',
+    'format_tooltip', 'is_active_quota', 'parse_field_name', 'popup_label', 'resolve_display_fields', 'time_until', 'tooltip_label',
 ]
 
 PERIOD_5H = 5 * 3600
@@ -179,6 +179,11 @@ def _field_sort_key(field: str) -> tuple[int, int, int, str]:
     return (0, period, variant_order, variant or '')
 
 
+def is_active_quota(field: str, entry: dict[str, Any]) -> bool:
+    """Return whether normalized provider data contains a displayable quota."""
+    return isinstance(entry, dict) and entry.get('utilization') is not None
+
+
 def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> list[str]:
     """Expand a popup_fields setting into concrete field names based on API data.
 
@@ -200,10 +205,14 @@ def expand_popup_fields(popup_fields: list[str], usage_data: dict[str, Any]) -> 
         and value.get('utilization') is not None
     }
 
+    excluded = {field[1:] for field in popup_fields if field.startswith('-')}
+    available.difference_update(excluded)
     result: list[str] = []
     seen: set[str] = set()
 
     for field in popup_fields:
+        if field.startswith('-'):
+            continue
         if field == '*':
             remaining = sorted((f for f in available if f not in seen), key=_field_sort_key)
             for f in remaining:
@@ -425,22 +434,23 @@ def time_until(iso_str: str, clock_24h: bool | None = None) -> str:
 def _target_currency_symbol(currency: str | None) -> str:
     """Return the symbol to display for a currency amount.
 
-    Precedence: an explicit ``currency_symbol`` user override, then the
-    billing currency reported by the API (its known symbol, or the ISO code
-    itself as a fallback), then the system locale symbol.
+    Precedence: an explicit ``currency_symbol`` user override (``None``
+    means unset; an empty override means "no symbol"), then the billing
+    currency reported by the API (its known symbol, or the ISO code itself
+    as a fallback), then the system locale symbol.
 
     Parameters
     ----------
     currency : str or None
         ISO 4217 currency code from the API (e.g. ``'EUR'``), or None.
     """
-    if CURRENCY_SYMBOL != _SYSTEM_CURRENCY_SYMBOL:
+    if CURRENCY_SYMBOL is not None:
         return CURRENCY_SYMBOL
 
     if currency:
         return _CURRENCY_SYMBOLS.get(currency.upper(), currency.upper())
 
-    return CURRENCY_SYMBOL
+    return _SYSTEM_CURRENCY_SYMBOL
 
 
 def format_credits(minor_units: float, currency: str | None = None, decimal_places: int | None = None) -> str:
@@ -469,8 +479,10 @@ def format_credits(minor_units: float, currency: str | None = None, decimal_plac
     try:
         formatted = _locale.currency(amount, grouping=True)
 
-        if symbol and symbol != _SYSTEM_CURRENCY_SYMBOL and _SYSTEM_CURRENCY_SYMBOL:
-            formatted = formatted.replace(_SYSTEM_CURRENCY_SYMBOL, symbol)
+        # An empty symbol (explicit "no symbol" override) removes the system
+        # symbol instead of leaving it in place.
+        if symbol != _SYSTEM_CURRENCY_SYMBOL and _SYSTEM_CURRENCY_SYMBOL:
+            formatted = formatted.replace(_SYSTEM_CURRENCY_SYMBOL, symbol).strip()
 
         return formatted
     except (ValueError, _locale.Error):
