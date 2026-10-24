@@ -20,7 +20,7 @@ def _load(app_dir: Path, home_dir: Path) -> dict:
     fake_file = str(app_dir / 'usage_monitor_for_claude' / 'settings.py')
     with patch.object(settings_mod, '__file__', fake_file), \
          patch.object(Path, 'home', return_value=home_dir), \
-         patch.object(settings_mod, 'ctypes', MagicMock()):
+         patch.object(settings_mod, 'show_warning_box', MagicMock()):
         return settings_mod._load_settings()
 
 
@@ -60,7 +60,7 @@ class TestLoadSettings(unittest.TestCase):
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
@@ -75,7 +75,7 @@ class TestLoadSettings(unittest.TestCase):
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
                  patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
@@ -90,7 +90,7 @@ class TestLoadSettings(unittest.TestCase):
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
                  patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result['bg'], '#custom')
 
@@ -105,7 +105,7 @@ class TestLoadSettings(unittest.TestCase):
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
                  patch.dict('os.environ', {'CODEX_HOME': str(claude_dir)}), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
@@ -117,7 +117,7 @@ class TestLoadSettings(unittest.TestCase):
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.dict('os.environ', {'CODEX_HOME': config_tmp}), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result['bg'], '#custom')
 
@@ -134,16 +134,17 @@ class TestLoadSettings(unittest.TestCase):
         self.assertEqual(result['poll_interval'], 240)
 
     def test_all_popup_theme_colors_exported(self):
+        """Every user-overridable popup theme color is part of the declared public API."""
         for name in ('BG', 'FG', 'FG_DIM', 'FG_HEADING', 'FG_LINK', 'BAR_BG', 'BAR_FG', 'BAR_FG_WARN', 'BAR_DIVIDER', 'BAR_MARKER'):
             self.assertIn(name, settings_mod.__all__)
 
     def test_utf8_bom_file_loaded(self):
+        """A UTF-8 settings file with BOM (PowerShell 5 Out-File, legacy Notepad) is accepted."""
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
-            expected = {'poll_interval': 300}
-            path = Path(app_tmp) / settings_mod.SETTINGS_FILENAME
-            path.write_bytes(b'\xef\xbb\xbf' + json.dumps(expected).encode('utf-8'))
+            settings = {'poll_interval': 300}
+            (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_bytes(b'\xef\xbb\xbf' + json.dumps(settings).encode('utf-8'))
             result = _load(Path(app_tmp), Path(home_tmp))
-        self.assertEqual(result, expected)
+        self.assertEqual(result, settings)
 
     def test_empty_json_object(self):
         """An empty JSON object is valid and returns empty dict."""
@@ -178,12 +179,12 @@ class TestLoadSettings(unittest.TestCase):
         with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
             (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_text('{broken', encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
-            mock_ctypes = MagicMock()
+            mock_box = MagicMock()
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.object(settings_mod, 'ctypes', mock_ctypes):
+                 patch.object(settings_mod, 'show_warning_box', mock_box):
                 settings_mod._load_settings()
-            mock_ctypes.windll.user32.MessageBoxW.assert_called_once()
+            mock_box.assert_called_once()
 
     def test_json_array_returns_empty_dict(self):
         """JSON root that is not an object shows error and returns empty dict."""
@@ -205,7 +206,7 @@ class TestLoadSettings(unittest.TestCase):
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()), \
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()), \
                  patch.object(Path, 'is_file', return_value=True), \
                  patch.object(Path, 'read_text', side_effect=PermissionError('access denied')):
                 result = settings_mod._load_settings()
@@ -219,7 +220,7 @@ class TestLoadSettings(unittest.TestCase):
             with patch.object(settings_mod.sys, 'frozen', True, create=True), \
                  patch.object(settings_mod.sys, 'executable', str(Path(exe_tmp) / 'app.exe')), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.object(settings_mod, 'ctypes', MagicMock()):
+                 patch.object(settings_mod, 'show_warning_box', MagicMock()):
                 result = settings_mod._load_settings()
         self.assertEqual(result, settings)
 
@@ -229,14 +230,14 @@ class TestLoadSettings(unittest.TestCase):
             settings = {'poll_interval': 'not_a_number', 'poll_fast': 30}
             (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
             fake_file = str(Path(app_tmp) / 'usage_monitor_for_claude' / 'settings.py')
-            mock_ctypes = MagicMock()
+            mock_box = MagicMock()
             with patch.object(settings_mod, '__file__', fake_file), \
                  patch.object(Path, 'home', return_value=Path(home_tmp)), \
-                 patch.object(settings_mod, 'ctypes', mock_ctypes):
+                 patch.object(settings_mod, 'show_warning_box', mock_box):
                 result = settings_mod._load_settings()
             self.assertNotIn('poll_interval', result)
             self.assertEqual(result['poll_fast'], 30)
-            mock_ctypes.windll.user32.MessageBoxW.assert_called_once()
+            mock_box.assert_called_once()
 
 
 class TestSettingsOverrides(unittest.TestCase):
@@ -253,16 +254,6 @@ class TestSettingsOverrides(unittest.TestCase):
         self._assert_overrides(settings, [
             ('poll_interval', 300), ('poll_fast', 30), ('poll_fast_extra', 5), ('poll_error', 10),
         ])
-
-    def test_logging_and_updater_overrides(self):
-        settings = {
-            'auto_update_codex_cli': False,
-            'codex_update_interval': 3600,
-            'notify_codex_update': False,
-            'log_max_bytes': 4096,
-            'log_backup_count': 5,
-        }
-        self._assert_overrides(settings, list(settings.items()))
 
     def test_popup_color_overrides(self):
         """Popup color constants are overridden by settings."""
@@ -281,6 +272,10 @@ class TestSettingsOverrides(unittest.TestCase):
             ('alert_thresholds_extra_usage', [70, 90]),
             ('alert_thresholds_five_hour', [80]),
         ], absent=['alert_thresholds_seven_day'])
+
+    def test_notify_codex_update_override(self):
+        """notify_codex_update is overridden by settings; absent keeps the default on."""
+        self._assert_overrides({'notify_codex_update': False}, [('notify_codex_update', False)], absent=['alert_time_aware'])
 
     def test_icon_color_override(self):
         """Icon color dicts are merged, JSON arrays become tuples."""
@@ -326,6 +321,18 @@ class TestSettingsOverrides(unittest.TestCase):
             self.assertNotIn(key, loaded, f'{key} should not be in loaded settings')
 
 
+    def test_logging_and_updater_overrides(self):
+        settings = {
+            'auto_update_codex_cli': False,
+            'codex_update_interval': 3600,
+            'notify_codex_update': False,
+            'log_max_bytes': 4096,
+            'log_backup_count': 5,
+        }
+        self._assert_overrides(settings, list(settings.items()))
+
+
+
 class TestSettingsValidation(unittest.TestCase):
     """Tests that invalid setting values are rejected with a MessageBox."""
 
@@ -334,13 +341,22 @@ class TestSettingsValidation(unittest.TestCase):
         data = {'poll_interval': 300, 'bg': '#000', 'icon_light': {'fg': [0, 255, 0, 255]}}
         result, mock = self._run_validate(data)
         self.assertEqual(result, data)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
+
+    def test_container_values_for_enum_settings_are_dropped(self):
+        """Malformed JSON containers produce a warning instead of aborting startup."""
+        for key in ('time_format', 'icon_style'):
+            for value in ([], ['numbers'], {}, {'format': '24h'}):
+                with self.subTest(key=key, value=value):
+                    result, warning = self._run_validate({key: value})
+                    self.assertNotIn(key, result)
+                    warning.assert_called_once()
 
     def test_string_for_numeric_key(self):
         """String value for numeric key is dropped."""
         result, mock = self._run_validate({'poll_interval': 'abc'})
         self.assertNotIn('poll_interval', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_bool_for_numeric_key(self):
         """Boolean for numeric key is dropped (bool is subclass of int)."""
@@ -361,29 +377,7 @@ class TestSettingsValidation(unittest.TestCase):
         """Float values are dropped for numeric keys (integers only)."""
         result, mock = self._run_validate({'poll_interval': 120.5})
         self.assertNotIn('poll_interval', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
-
-    def test_poll_fast_greater_than_poll_interval_drops_conflicting_overrides(self):
-        result, mock = self._run_validate({'poll_interval': 60, 'poll_fast': 120, 'bg': '#000'})
-        self.assertNotIn('poll_interval', result)
-        self.assertNotIn('poll_fast', result)
-        self.assertEqual(result['bg'], '#000')
-        mock.windll.user32.MessageBoxW.assert_called_once()
-
-    def test_single_poll_override_is_checked_against_default(self):
-        result, mock = self._run_validate({'poll_interval': 60})
-        self.assertNotIn('poll_interval', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
-
-    def test_log_max_bytes_below_minimum_dropped(self):
-        result, mock = self._run_validate({'log_max_bytes': 1023})
-        self.assertNotIn('log_max_bytes', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
-
-    def test_log_backup_count_zero_dropped(self):
-        result, mock = self._run_validate({'log_backup_count': 0})
-        self.assertNotIn('log_backup_count', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_non_string_color(self):
         """Non-string value for color key is dropped."""
@@ -431,12 +425,12 @@ class TestSettingsValidation(unittest.TestCase):
         """Unknown keys are not validated or removed."""
         result, mock = self._run_validate({'custom_key': [1, 2, 3]})
         self.assertEqual(result['custom_key'], [1, 2, 3])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_multiple_errors_single_message_box(self):
         """Multiple invalid values produce exactly one MessageBox."""
         result, mock = self._run_validate({'poll_interval': 'x', 'bg': 42, 'poll_fast': -1})
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
         self.assertEqual(result, {})
 
     def test_valid_kept_when_invalid_dropped(self):
@@ -452,24 +446,49 @@ class TestSettingsValidation(unittest.TestCase):
         """time_format '24h' passes through unchanged."""
         result, mock = self._run_validate({'time_format': '24h'})
         self.assertEqual(result['time_format'], '24h')
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_time_format_12h_valid(self):
         """time_format '12h' passes through unchanged."""
         result, mock = self._run_validate({'time_format': '12h'})
         self.assertEqual(result['time_format'], '12h')
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_time_format_unknown_value_dropped(self):
         """Unknown time_format value is dropped with a MessageBox."""
         result, mock = self._run_validate({'time_format': 'military'})
         self.assertNotIn('time_format', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_time_format_non_string_dropped(self):
         """Non-string time_format value is dropped."""
         result, _ = self._run_validate({'time_format': 24})
         self.assertNotIn('time_format', result)
+
+    # icon_style validation
+
+    def test_icon_style_number_bars_valid(self):
+        """icon_style 'number+bars' passes through unchanged."""
+        result, mock = self._run_validate({'icon_style': 'number+bars'})
+        self.assertEqual(result['icon_style'], 'number+bars')
+        mock.assert_not_called()
+
+    def test_icon_style_numbers_valid(self):
+        """icon_style 'numbers' passes through unchanged."""
+        result, mock = self._run_validate({'icon_style': 'numbers'})
+        self.assertEqual(result['icon_style'], 'numbers')
+        mock.assert_not_called()
+
+    def test_icon_style_unknown_value_dropped(self):
+        """Unknown icon_style value is dropped with a MessageBox."""
+        result, mock = self._run_validate({'icon_style': 'bars'})
+        self.assertNotIn('icon_style', result)
+        mock.assert_called_once()
+
+    def test_icon_style_non_string_dropped(self):
+        """Non-string icon_style value is dropped."""
+        result, _ = self._run_validate({'icon_style': 2})
+        self.assertNotIn('icon_style', result)
 
     # Non-negative numeric validation
 
@@ -477,25 +496,25 @@ class TestSettingsValidation(unittest.TestCase):
         """Value 0 for idle_pause is valid (disables idle detection)."""
         result, mock = self._run_validate({'idle_pause': 0})
         self.assertEqual(result['idle_pause'], 0)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_idle_pause_positive_valid(self):
         """Positive value for idle_pause is valid."""
         result, mock = self._run_validate({'idle_pause': 600})
         self.assertEqual(result['idle_pause'], 600)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_idle_pause_negative_dropped(self):
         """Negative value for idle_pause is dropped."""
         result, mock = self._run_validate({'idle_pause': -1})
         self.assertNotIn('idle_pause', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_idle_pause_string_dropped(self):
         """String value for idle_pause is dropped."""
         result, mock = self._run_validate({'idle_pause': 'five'})
         self.assertNotIn('idle_pause', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_idle_pause_bool_dropped(self):
         """Boolean for idle_pause is dropped."""
@@ -506,7 +525,25 @@ class TestSettingsValidation(unittest.TestCase):
         """Float value for idle_pause is dropped (integers only)."""
         result, mock = self._run_validate({'idle_pause': 120.5})
         self.assertNotIn('idle_pause', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
+
+    def test_idle_interval_positive_valid(self):
+        """Positive value for idle_interval is valid."""
+        result, mock = self._run_validate({'idle_interval': 600})
+        self.assertEqual(result['idle_interval'], 600)
+        mock.assert_not_called()
+
+    def test_idle_interval_zero_dropped(self):
+        """Value 0 for idle_interval is dropped - polling always has a cadence."""
+        result, mock = self._run_validate({'idle_interval': 0})
+        self.assertNotIn('idle_interval', result)
+        mock.assert_called_once()
+
+    def test_idle_interval_string_dropped(self):
+        """String value for idle_interval is dropped."""
+        result, mock = self._run_validate({'idle_interval': 'fifteen'})
+        self.assertNotIn('idle_interval', result)
+        mock.assert_called_once()
 
     # Threshold array validation
 
@@ -514,7 +551,7 @@ class TestSettingsValidation(unittest.TestCase):
         """Valid threshold array passes through without MessageBox."""
         result, mock = self._run_validate({'alert_thresholds_five_hour': [80, 95]})
         self.assertEqual(result['alert_thresholds_five_hour'], [80, 95])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_threshold_array_sorted_and_deduped(self):
         """Threshold values are sorted and deduplicated."""
@@ -525,19 +562,19 @@ class TestSettingsValidation(unittest.TestCase):
         """Empty threshold array is valid (disables alerts)."""
         result, mock = self._run_validate({'alert_thresholds_five_hour': []})
         self.assertEqual(result['alert_thresholds_five_hour'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_threshold_not_array_dropped(self):
         """Non-array value for threshold key is dropped."""
         result, mock = self._run_validate({'alert_thresholds_five_hour': 80})
         self.assertNotIn('alert_thresholds_five_hour', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_threshold_string_in_array_dropped(self):
         """String element in threshold array causes the key to be dropped."""
         result, mock = self._run_validate({'alert_thresholds_five_hour': [80, 'high']})
         self.assertNotIn('alert_thresholds_five_hour', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_threshold_bool_in_array_dropped(self):
         """Boolean element in threshold array causes the key to be dropped."""
@@ -558,13 +595,13 @@ class TestSettingsValidation(unittest.TestCase):
         """Float values in threshold array are valid."""
         result, mock = self._run_validate({'alert_thresholds_five_hour': [80.5, 95.0]})
         self.assertEqual(result['alert_thresholds_five_hour'], [80.5, 95.0])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_threshold_seven_day_key_validated(self):
         """Weekly threshold key is validated the same way."""
         result, mock = self._run_validate({'alert_thresholds_seven_day': [70, 90]})
         self.assertEqual(result['alert_thresholds_seven_day'], [70, 90])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_threshold_per_variant_invalid_dropped(self):
         """Invalid per-variant threshold is dropped."""
@@ -577,31 +614,31 @@ class TestSettingsValidation(unittest.TestCase):
         """Valid number for alert_time_aware_below passes through."""
         result, mock = self._run_validate({'alert_time_aware_below': 90})
         self.assertEqual(result['alert_time_aware_below'], 90)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_alert_time_aware_below_float_valid(self):
         """Float value for alert_time_aware_below is valid."""
         result, mock = self._run_validate({'alert_time_aware_below': 85.5})
         self.assertEqual(result['alert_time_aware_below'], 85.5)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_alert_time_aware_below_zero_dropped(self):
         """Value 0 for alert_time_aware_below is dropped (must be 1-100)."""
         result, mock = self._run_validate({'alert_time_aware_below': 0})
         self.assertNotIn('alert_time_aware_below', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_alert_time_aware_below_over_100_dropped(self):
         """Value > 100 for alert_time_aware_below is dropped."""
         result, mock = self._run_validate({'alert_time_aware_below': 101})
         self.assertNotIn('alert_time_aware_below', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_alert_time_aware_below_string_dropped(self):
         """String value for alert_time_aware_below is dropped."""
         result, mock = self._run_validate({'alert_time_aware_below': '90'})
         self.assertNotIn('alert_time_aware_below', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_alert_time_aware_below_bool_dropped(self):
         """Boolean for alert_time_aware_below is dropped."""
@@ -614,25 +651,49 @@ class TestSettingsValidation(unittest.TestCase):
         """Boolean true for alert_time_aware passes through."""
         result, mock = self._run_validate({'alert_time_aware': True})
         self.assertIs(result['alert_time_aware'], True)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_alert_time_aware_false_valid(self):
         """Boolean false for alert_time_aware passes through."""
         result, mock = self._run_validate({'alert_time_aware': False})
         self.assertIs(result['alert_time_aware'], False)
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_alert_time_aware_int_dropped(self):
         """Integer 1 for alert_time_aware is dropped (must be boolean)."""
         result, mock = self._run_validate({'alert_time_aware': 1})
         self.assertNotIn('alert_time_aware', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_alert_time_aware_string_dropped(self):
         """String 'true' for alert_time_aware is dropped."""
         result, mock = self._run_validate({'alert_time_aware': 'true'})
         self.assertNotIn('alert_time_aware', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
+
+    def test_notify_codex_update_true_valid(self):
+        """Boolean true for notify_codex_update passes through."""
+        result, mock = self._run_validate({'notify_codex_update': True})
+        self.assertIs(result['notify_codex_update'], True)
+        mock.assert_not_called()
+
+    def test_notify_codex_update_false_valid(self):
+        """Boolean false for notify_codex_update passes through."""
+        result, mock = self._run_validate({'notify_codex_update': False})
+        self.assertIs(result['notify_codex_update'], False)
+        mock.assert_not_called()
+
+    def test_notify_codex_update_int_dropped(self):
+        """Integer 0 for notify_codex_update is dropped (must be boolean)."""
+        result, mock = self._run_validate({'notify_codex_update': 0})
+        self.assertNotIn('notify_codex_update', result)
+        mock.assert_called_once()
+
+    def test_notify_codex_update_string_dropped(self):
+        """String 'false' for notify_codex_update is dropped."""
+        result, mock = self._run_validate({'notify_codex_update': 'false'})
+        self.assertNotIn('notify_codex_update', result)
+        mock.assert_called_once()
 
     # Command validation (string or array of strings)
 
@@ -640,208 +701,265 @@ class TestSettingsValidation(unittest.TestCase):
         """String value for on_reset_command is normalized to a single-element list."""
         result, mock = self._run_validate({'on_reset_command': 'echo hello'})
         self.assertEqual(result['on_reset_command'], ['echo hello'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_command_empty_string_means_not_set(self):
+        """An empty command string disables the command like [] does - it must not
+        activate the command machinery (e.g. the deferred double-click handler)."""
         result, mock = self._run_validate({'on_double_click_command': ''})
         self.assertEqual(result['on_double_click_command'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_command_whitespace_string_means_not_set(self):
+        """A whitespace-only command string disables the command like [] does."""
         result, mock = self._run_validate({'on_double_click_command': '   '})
         self.assertEqual(result['on_double_click_command'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_command_list_with_empty_string_dropped(self):
+        """An array containing an empty command string is dropped with an error."""
         result, mock = self._run_validate({'on_reset_command': ['echo hello', '']})
         self.assertNotIn('on_reset_command', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_on_reset_command_list_valid(self):
         """Array of strings for on_reset_command passes through."""
         result, mock = self._run_validate({'on_reset_command': ['cmd1', 'cmd2']})
         self.assertEqual(result['on_reset_command'], ['cmd1', 'cmd2'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_reset_command_empty_list_valid(self):
         """Empty array for on_reset_command is valid (disables the command)."""
         result, mock = self._run_validate({'on_reset_command': []})
         self.assertEqual(result['on_reset_command'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_reset_command_non_string_dropped(self):
         """Non-string/non-array value for on_reset_command is dropped."""
         result, mock = self._run_validate({'on_reset_command': 42})
         self.assertNotIn('on_reset_command', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_on_reset_command_list_with_non_string_dropped(self):
         """Array with non-string elements for on_reset_command is dropped."""
         result, mock = self._run_validate({'on_reset_command': ['cmd1', 42]})
         self.assertNotIn('on_reset_command', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_on_threshold_command_string_normalized_to_list(self):
         """String value for on_threshold_command is normalized to a single-element list."""
         result, mock = self._run_validate({'on_threshold_command': 'powershell -File notify.ps1'})
         self.assertEqual(result['on_threshold_command'], ['powershell -File notify.ps1'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_threshold_command_list_valid(self):
         """Array of strings for on_threshold_command passes through."""
         result, mock = self._run_validate({'on_threshold_command': ['sound.bat', 'curl http://example.com']})
         self.assertEqual(result['on_threshold_command'], ['sound.bat', 'curl http://example.com'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_threshold_command_non_string_dropped(self):
         """Non-string/non-array value for on_threshold_command is dropped."""
         result, mock = self._run_validate({'on_threshold_command': True})
         self.assertNotIn('on_threshold_command', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_on_double_click_command_string_normalized_to_list(self):
         """String value for on_double_click_command is normalized to a single-element list."""
         result, mock = self._run_validate({'on_double_click_command': 'AgentMonitorForClaude.exe'})
         self.assertEqual(result['on_double_click_command'], ['AgentMonitorForClaude.exe'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_double_click_command_list_valid(self):
         """Array of strings for on_double_click_command passes through."""
         result, mock = self._run_validate({'on_double_click_command': ['a.exe', 'b.exe']})
         self.assertEqual(result['on_double_click_command'], ['a.exe', 'b.exe'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_on_double_click_command_non_string_dropped(self):
         """Non-string/non-array value for on_double_click_command is dropped."""
         result, mock = self._run_validate({'on_double_click_command': 42})
         self.assertNotIn('on_double_click_command', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
+
+    # cli_command validation (object mapping a name to a command array)
+
+    def test_cli_command_valid(self):
+        """Valid object mapping a name to a command array passes through."""
+        result, mock = self._run_validate({'cli_command': {'WSL': ['wsl', '/home/user/.local/bin/claude']}})
+        self.assertEqual(result['cli_command'], {'WSL': ['wsl', '/home/user/.local/bin/claude']})
+        mock.assert_not_called()
+
+    def test_cli_command_empty_object_means_not_set(self):
+        """An empty object is valid and leaves the native CLI auto-detection active."""
+        result, mock = self._run_validate({'cli_command': {}})
+        self.assertEqual(result['cli_command'], {})
+        mock.assert_not_called()
+
+    def test_cli_command_not_object_dropped(self):
+        """Non-object value is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': ['wsl', 'claude']})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
+
+    def test_cli_command_empty_name_dropped(self):
+        """An empty name key is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': {'   ': ['wsl', 'claude']}})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
+
+    def test_cli_command_empty_array_dropped(self):
+        """An empty command array is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': {'WSL': []}})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
+
+    def test_cli_command_non_array_value_dropped(self):
+        """A non-array command value is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': {'WSL': 'wsl claude'}})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
+
+    def test_cli_command_array_with_empty_string_dropped(self):
+        """A command array containing an empty string is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': {'WSL': ['wsl', '']}})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
+
+    def test_cli_command_array_with_non_string_dropped(self):
+        """A command array containing a non-string element is dropped with an error."""
+        result, mock = self._run_validate({'cli_command': {'WSL': ['wsl', 42]}})
+        self.assertNotIn('cli_command', result)
+        mock.assert_called_once()
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        """Run _validate with mocked ctypes and return (result, mock_ctypes)."""
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        """Run _validate with a mocked warning box and return (result, mock_box)."""
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
+
+
+    def test_poll_fast_greater_than_poll_interval_drops_conflicting_overrides(self):
+        result, mock = self._run_validate({'poll_interval': 60, 'poll_fast': 120, 'bg': '#000'})
+        self.assertNotIn('poll_interval', result)
+        self.assertNotIn('poll_fast', result)
+        self.assertEqual(result['bg'], '#000')
+        mock.assert_called_once()
+
+
+    def test_single_poll_override_is_checked_against_default(self):
+        result, mock = self._run_validate({'poll_interval': 60})
+        self.assertNotIn('poll_interval', result)
+        mock.assert_called_once()
+
+
+    def test_log_max_bytes_below_minimum_dropped(self):
+        result, mock = self._run_validate({'log_max_bytes': 1023})
+        self.assertNotIn('log_max_bytes', result)
+        mock.assert_called_once()
+
+
+    def test_log_backup_count_zero_dropped(self):
+        result, mock = self._run_validate({'log_backup_count': 0})
+        self.assertNotIn('log_backup_count', result)
+        mock.assert_called_once()
+
 
 
 class TestIconFieldsValidation(unittest.TestCase):
     """Tests for icon_fields setting validation."""
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        """Run _validate with mocked ctypes and return (result, mock_ctypes)."""
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        """Run _validate with a mocked warning box and return (result, mock_box)."""
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
 
     def test_valid_two_strings(self):
         """Valid array of exactly 2 non-empty strings passes through."""
         result, mock = self._run_validate({'icon_fields': ['five_hour', 'seven_day_sonnet']})
         self.assertEqual(result['icon_fields'], ['five_hour', 'seven_day_sonnet'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_not_array_dropped(self):
         """Non-array value is dropped."""
         result, mock = self._run_validate({'icon_fields': 'five_hour'})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_one_entry_dropped(self):
         """Array with only one entry is dropped."""
         result, mock = self._run_validate({'icon_fields': ['five_hour']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_three_entries_dropped(self):
         """Array with three entries is dropped."""
         result, mock = self._run_validate({'icon_fields': ['a', 'b', 'c']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_empty_array_dropped(self):
         """Empty array is dropped."""
         result, mock = self._run_validate({'icon_fields': []})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_non_string_entry_dropped(self):
         """Array with non-string entry is dropped."""
         result, mock = self._run_validate({'icon_fields': ['five_hour', 42]})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_empty_string_entry_dropped(self):
         """Array with empty string entry is dropped."""
         result, mock = self._run_validate({'icon_fields': ['five_hour', '']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_unknown_field_names_accepted(self):
         """Unknown field names are not rejected."""
         result, mock = self._run_validate({'icon_fields': ['future_field', 'another_field']})
         self.assertEqual(result['icon_fields'], ['future_field', 'another_field'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_bool_entry_dropped(self):
         """Array with boolean entry is dropped."""
         result, mock = self._run_validate({'icon_fields': [True, 'five_hour']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_valid_mode_suffix_utilization(self):
         """Field with ':utilization' suffix is accepted."""
         result, mock = self._run_validate({'icon_fields': ['five_hour:utilization', 'seven_day']})
         self.assertEqual(result['icon_fields'], ['five_hour:utilization', 'seven_day'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_valid_mode_suffix_overage(self):
         """Field with ':overage' suffix is accepted."""
         result, mock = self._run_validate({'icon_fields': ['five_hour:overage', 'seven_day:overage']})
         self.assertEqual(result['icon_fields'], ['five_hour:overage', 'seven_day:overage'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_invalid_mode_suffix_dropped(self):
         """Field with unknown mode suffix is dropped."""
         result, mock = self._run_validate({'icon_fields': ['five_hour:bogus', 'seven_day']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_mixed_valid_and_invalid_mode_dropped(self):
         """Any invalid mode suffix causes the entire icon_fields to be dropped."""
         result, mock = self._run_validate({'icon_fields': ['five_hour:overage', 'seven_day:invalid']})
         self.assertNotIn('icon_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_mode_suffix_on_unknown_field_accepted(self):
         """Valid mode suffix on unknown field name is accepted."""
         result, mock = self._run_validate({'icon_fields': ['future_field:overage', 'another:utilization']})
         self.assertEqual(result['icon_fields'], ['future_field:overage', 'another:utilization'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
-
-
-class TestDetectSystemTimeFormat(unittest.TestCase):
-    """Tests for _detect_system_time_format() Windows locale detection."""
-
-    def _detect(self, chars: int, itime_value: int) -> str:
-        """Run detection with GetLocaleInfoEx mocked to return *chars* and write *itime_value*."""
-        mock_ctypes = MagicMock()
-        mock_ctypes.wintypes.DWORD.return_value.value = itime_value
-        mock_ctypes.windll.kernel32.GetLocaleInfoEx.return_value = chars
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
-            return settings_mod._detect_system_time_format()
-
-    def test_itime_one_is_24h(self):
-        """LOCALE_ITIME of 1 maps to a 24-hour clock."""
-        self.assertEqual(self._detect(chars=2, itime_value=1), '24h')
-
-    def test_itime_zero_is_12h(self):
-        """LOCALE_ITIME of 0 maps to a 12-hour clock."""
-        self.assertEqual(self._detect(chars=2, itime_value=0), '12h')
-
-    def test_query_failure_falls_back_to_24h(self):
-        """A failed locale query (0 chars written) falls back to 24-hour."""
-        self.assertEqual(self._detect(chars=0, itime_value=0), '24h')
+        mock.assert_not_called()
 
 
 class TestIconFieldsDefault(unittest.TestCase):
@@ -862,69 +980,87 @@ class TestIconFieldsDefault(unittest.TestCase):
         self.assertEqual(loaded['icon_fields'], ['seven_day', 'five_hour'])
 
 
+class TestIconStyleDefault(unittest.TestCase):
+    """Tests for ICON_STYLE default value."""
+
+    def test_default_without_settings(self):
+        """icon_style is absent when no settings file exists - the 'number+bars' default applies."""
+        with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
+            loaded = _load(Path(app_tmp), Path(home_tmp))
+        self.assertNotIn('icon_style', loaded)
+
+    def test_override_from_settings(self):
+        """icon_style is loaded from settings file."""
+        with TemporaryDirectory() as app_tmp, TemporaryDirectory() as home_tmp:
+            settings = {'icon_style': 'numbers'}
+            (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
+            loaded = _load(Path(app_tmp), Path(home_tmp))
+        self.assertEqual(loaded['icon_style'], 'numbers')
+
+
 class TestTooltipFieldsValidation(unittest.TestCase):
     """Tests for tooltip_fields setting validation."""
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        """Run _validate with mocked ctypes and return (result, mock_ctypes)."""
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        """Run _validate with a mocked warning box and return (result, mock_box)."""
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
 
     def test_valid_list(self):
         """Valid array of non-empty strings passes through."""
         result, mock = self._run_validate({'tooltip_fields': ['five_hour', 'seven_day_sonnet']})
         self.assertEqual(result['tooltip_fields'], ['five_hour', 'seven_day_sonnet'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_empty_list_valid(self):
         """Empty list is valid (tooltip shows only the title)."""
         result, mock = self._run_validate({'tooltip_fields': []})
         self.assertEqual(result['tooltip_fields'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_single_entry_valid(self):
         """Single entry is valid."""
         result, mock = self._run_validate({'tooltip_fields': ['five_hour']})
         self.assertEqual(result['tooltip_fields'], ['five_hour'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_not_array_dropped(self):
         """Non-array value is dropped."""
         result, mock = self._run_validate({'tooltip_fields': 'five_hour'})
         self.assertNotIn('tooltip_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_non_string_entry_dropped(self):
         """Array with non-string entry is dropped."""
         result, mock = self._run_validate({'tooltip_fields': ['five_hour', 42]})
         self.assertNotIn('tooltip_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_empty_string_entry_dropped(self):
         """Array with empty string entry is dropped."""
         result, mock = self._run_validate({'tooltip_fields': ['five_hour', '']})
         self.assertNotIn('tooltip_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_bool_entry_dropped(self):
         """Array with boolean entry is dropped."""
         result, mock = self._run_validate({'tooltip_fields': [True, 'five_hour']})
         self.assertNotIn('tooltip_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_duplicates_removed(self):
         """Duplicate entries are silently removed."""
         result, mock = self._run_validate({'tooltip_fields': ['five_hour', 'seven_day', 'five_hour']})
         self.assertEqual(result['tooltip_fields'], ['five_hour', 'seven_day'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_unknown_field_names_accepted(self):
         """Unknown field names are not rejected."""
         result, mock = self._run_validate({'tooltip_fields': ['future_field']})
         self.assertEqual(result['tooltip_fields'], ['future_field'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
 
 class TestTooltipFieldsDefault(unittest.TestCase):
@@ -1010,86 +1146,115 @@ class TestPopupFieldsValidation(unittest.TestCase):
     """Tests for popup_fields setting validation."""
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
 
     def test_valid_list_with_wildcard(self):
         """Array with field names and wildcard passes through."""
         result, mock = self._run_validate({'popup_fields': ['five_hour', '*']})
         self.assertEqual(result['popup_fields'], ['five_hour', '*'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_wildcard_only(self):
         """Array with only wildcard passes through."""
         result, mock = self._run_validate({'popup_fields': ['*']})
         self.assertEqual(result['popup_fields'], ['*'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_no_wildcard(self):
         """Array without wildcard passes through."""
         result, mock = self._run_validate({'popup_fields': ['five_hour', 'seven_day']})
         self.assertEqual(result['popup_fields'], ['five_hour', 'seven_day'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
+
+    def test_exclusions_are_valid(self):
+        """Exact field exclusions are valid with a wildcard or explicit field list."""
+        for fields in (
+            ['*', '-iguana_necktie'],
+            ['-iguana_necktie', '*', '-unknown_quota'],
+            ['five_hour', '-five_hour', 'seven_day'],
+            ['-iguana_necktie'],
+        ):
+            with self.subTest(popup_fields=fields):
+                result, mock = self._run_validate({'popup_fields': fields})
+                self.assertEqual(result['popup_fields'], fields)
+                mock.assert_not_called()
+
+    def test_duplicate_exclusions_removed(self):
+        """Deduplication preserves the order of exclusions and inclusions."""
+        fields = ['-iguana_necktie', 'five_hour', '-iguana_necktie', '*', '-seven_day', 'five_hour']
+        result, mock = self._run_validate({'popup_fields': fields})
+        self.assertEqual(result['popup_fields'], ['-iguana_necktie', 'five_hour', '*', '-seven_day'])
+        mock.assert_not_called()
+
+    def test_exclusion_without_field_dropped(self):
+        """A bare minus or wildcard exclusion reports an invalid setting."""
+        for field in ('-', '-*'):
+            with self.subTest(field=field):
+                result, mock = self._run_validate({'popup_fields': ['*', field]})
+                self.assertNotIn('popup_fields', result)
+                mock.assert_called_once()
+                self.assertIn('exclusions must name a field', mock.call_args.args[0])
 
     def test_empty_list_valid(self):
         """Empty list is valid (no bars shown)."""
         result, mock = self._run_validate({'popup_fields': []})
         self.assertEqual(result['popup_fields'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_multiple_wildcards_dropped(self):
         """Multiple wildcards cause the key to be dropped."""
         result, mock = self._run_validate({'popup_fields': ['*', 'five_hour', '*']})
         self.assertNotIn('popup_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_not_array_dropped(self):
         """Non-array value is dropped."""
         result, mock = self._run_validate({'popup_fields': 'five_hour'})
         self.assertNotIn('popup_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_non_string_entry_dropped(self):
         """Array with non-string entry is dropped."""
         result, mock = self._run_validate({'popup_fields': ['five_hour', 42]})
         self.assertNotIn('popup_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_empty_string_entry_dropped(self):
         """Array with empty string entry is dropped."""
         result, mock = self._run_validate({'popup_fields': ['five_hour', '']})
         self.assertNotIn('popup_fields', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_duplicates_removed(self):
         """Duplicate entries are silently removed (wildcard preserved)."""
         result, mock = self._run_validate({'popup_fields': ['five_hour', 'seven_day', 'five_hour', '*']})
         self.assertEqual(result['popup_fields'], ['five_hour', 'seven_day', '*'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
 
 class TestDynamicThresholdValidation(unittest.TestCase):
     """Tests for dynamic alert_thresholds_* key validation."""
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
 
     def test_per_variant_threshold_valid(self):
         """Per-variant threshold key is validated as threshold array."""
         result, mock = self._run_validate({'alert_thresholds_seven_day_opus': [50, 80, 95]})
         self.assertEqual(result['alert_thresholds_seven_day_opus'], [50, 80, 95])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_per_variant_threshold_invalid_dropped(self):
         """Invalid per-variant threshold value is dropped."""
         result, mock = self._run_validate({'alert_thresholds_seven_day_opus': 'bad'})
         self.assertNotIn('alert_thresholds_seven_day_opus', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_per_variant_threshold_sorted_deduped(self):
         """Per-variant thresholds are sorted and deduplicated."""
@@ -1097,57 +1262,122 @@ class TestDynamicThresholdValidation(unittest.TestCase):
         self.assertEqual(result['alert_thresholds_seven_day_cowork'], [50, 80, 95])
 
 
+class TestAlertExtraUsageSpentValidation(unittest.TestCase):
+    """Tests for alert_extra_usage_spent setting validation."""
+
+    def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
+        """Run _validate with a mocked warning box and return (result, mock_box)."""
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
+            result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
+        return result, mock_box
+
+    def test_valid_amounts_accepted(self):
+        """Valid spend amounts are accepted unchanged."""
+        result, mock = self._run_validate({'alert_extra_usage_spent': [50, 100, 150]})
+        self.assertEqual(result['alert_extra_usage_spent'], [50, 100, 150])
+        mock.assert_not_called()
+
+    def test_amounts_sorted_and_deduped(self):
+        """Spend amounts are sorted and deduplicated."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [150, 50, 100, 50]})
+        self.assertEqual(result['alert_extra_usage_spent'], [50, 100, 150])
+
+    def test_amounts_above_100_accepted(self):
+        """Unlike percentage thresholds, spend amounts have no upper bound."""
+        result, mock = self._run_validate({'alert_extra_usage_spent': [500, 1000]})
+        self.assertEqual(result['alert_extra_usage_spent'], [500, 1000])
+        mock.assert_not_called()
+
+    def test_fractional_amounts_accepted(self):
+        """Fractional spend amounts are accepted."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [0.5, 99.99]})
+        self.assertEqual(result['alert_extra_usage_spent'], [0.5, 99.99])
+
+    def test_empty_list_accepted(self):
+        """An empty list (alerts disabled) is accepted."""
+        result, mock = self._run_validate({'alert_extra_usage_spent': []})
+        self.assertEqual(result['alert_extra_usage_spent'], [])
+        mock.assert_not_called()
+
+    def test_non_list_dropped(self):
+        """A non-list value is dropped with an error."""
+        result, mock = self._run_validate({'alert_extra_usage_spent': 50})
+        self.assertNotIn('alert_extra_usage_spent', result)
+        mock.assert_called_once()
+
+    def test_zero_amount_dropped(self):
+        """A zero amount invalidates the whole list."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [0, 50]})
+        self.assertNotIn('alert_extra_usage_spent', result)
+
+    def test_negative_amount_dropped(self):
+        """A negative amount invalidates the whole list."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [-10, 50]})
+        self.assertNotIn('alert_extra_usage_spent', result)
+
+    def test_non_numeric_amount_dropped(self):
+        """A non-numeric amount invalidates the whole list."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [50, 'high']})
+        self.assertNotIn('alert_extra_usage_spent', result)
+
+    def test_bool_amount_dropped(self):
+        """A boolean amount invalidates the whole list."""
+        result, _ = self._run_validate({'alert_extra_usage_spent': [True, 50]})
+        self.assertNotIn('alert_extra_usage_spent', result)
+
+
 class TestCompactHideValidation(unittest.TestCase):
     """Tests for compact_hide setting validation."""
 
     def _run_validate(self, data: dict) -> tuple[dict, MagicMock]:
-        """Run _validate with mocked ctypes and return (result, mock_ctypes)."""
-        mock_ctypes = MagicMock()
-        with patch.object(settings_mod, 'ctypes', mock_ctypes):
+        """Run _validate with a mocked warning box and return (result, mock_box)."""
+        mock_box = MagicMock()
+        with patch.object(settings_mod, 'show_warning_box', mock_box):
             result = settings_mod._validate(dict(data), Path('/fake/settings.json'))
-        return result, mock_ctypes
+        return result, mock_box
 
     def test_valid_list(self):
         """Array of section keys and field names passes through."""
         result, mock = self._run_validate({'compact_hide': ['account', 'claude_code', 'seven_day_opus']})
         self.assertEqual(result['compact_hide'], ['account', 'claude_code', 'seven_day_opus'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_empty_list_valid(self):
         """Empty list is valid (pinning hides nothing)."""
         result, mock = self._run_validate({'compact_hide': []})
         self.assertEqual(result['compact_hide'], [])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_not_array_dropped(self):
         """Non-array value is dropped."""
         result, mock = self._run_validate({'compact_hide': 'account'})
         self.assertNotIn('compact_hide', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_non_string_entry_dropped(self):
         """Array with non-string entry is dropped."""
         result, mock = self._run_validate({'compact_hide': ['account', 42]})
         self.assertNotIn('compact_hide', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_empty_string_entry_dropped(self):
         """Array with empty string entry is dropped."""
         result, mock = self._run_validate({'compact_hide': ['account', '']})
         self.assertNotIn('compact_hide', result)
-        mock.windll.user32.MessageBoxW.assert_called_once()
+        mock.assert_called_once()
 
     def test_duplicates_removed(self):
         """Duplicate entries are silently removed."""
         result, mock = self._run_validate({'compact_hide': ['account', 'status', 'account']})
         self.assertEqual(result['compact_hide'], ['account', 'status'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
     def test_unknown_names_accepted(self):
         """Unknown section/field names are not rejected."""
         result, mock = self._run_validate({'compact_hide': ['future_section']})
         self.assertEqual(result['compact_hide'], ['future_section'])
-        mock.windll.user32.MessageBoxW.assert_not_called()
+        mock.assert_not_called()
 
 
 class TestCompactHideDefault(unittest.TestCase):
@@ -1166,6 +1396,41 @@ class TestCompactHideDefault(unittest.TestCase):
             (Path(app_tmp) / settings_mod.SETTINGS_FILENAME).write_text(json.dumps(settings), encoding='utf-8')
             loaded = _load(Path(app_tmp), Path(home_tmp))
         self.assertEqual(loaded['compact_hide'], ['account', 'status'])
+
+
+class TestQuickActionCommandAlias(unittest.TestCase):
+    """Tests for resolving the quick action against its former key name."""
+
+    def test_new_key(self):
+        """The current key is used when present."""
+        self.assertEqual(settings_mod._quick_action_command({'quick_action_command': ['a']}), ['a'])
+
+    def test_former_key_still_works(self):
+        """A settings file written before the rename keeps working."""
+        self.assertEqual(settings_mod._quick_action_command({'on_double_click_command': ['a']}), ['a'])
+
+    def test_new_key_wins_over_former(self):
+        """With both present the current key decides."""
+        result = settings_mod._quick_action_command({'quick_action_command': ['new'], 'on_double_click_command': ['old']})
+        self.assertEqual(result, ['new'])
+
+    def test_empty_new_key_turns_the_action_off(self):
+        """Emptying the current key disables the action without deleting the old one."""
+        result = settings_mod._quick_action_command({'quick_action_command': [], 'on_double_click_command': ['old']})
+        self.assertEqual(result, [])
+
+    def test_neither_key(self):
+        """No quick action configured is the default."""
+        self.assertEqual(settings_mod._quick_action_command({}), [])
+
+    def test_both_keys_are_validated(self):
+        """The former key is validated exactly like the current one."""
+        for key in ('quick_action_command', 'on_double_click_command'):
+            with self.subTest(key=key):
+                self.assertIn(key, settings_mod._COMMAND_KEYS)
+
+
+
 
 
 if __name__ == '__main__':

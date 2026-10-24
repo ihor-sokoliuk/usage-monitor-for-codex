@@ -1,28 +1,23 @@
-<!--
-Thanks for contributing! This project is developed with Claude Code.
-See `.claude/CLAUDE.md` for the full conventions.
--->
-
 ## Summary
 
-<!-- What changed and why? Link any related issue or discussion. -->
+<!-- What changed and why? Link related issues or discussions. -->
 
-## Workflow checklist
+## Validation
 
-- [ ] Read [`.claude/CLAUDE.md`](../blob/main/.claude/CLAUDE.md) and followed the project conventions
-- [ ] Ran the `/review` slash command on all staged changes (code, tests, documentation)
-- [ ] Used `/commit-message` to generate the commit message(s)
-- [ ] Ran the full test suite: `python -m unittest discover -s tests`
+- [ ] Read [AGENTS.md](../blob/main/AGENTS.md) and preserved the fixed local Codex app-server boundary
+- [ ] Full native Windows suite: `python -m unittest discover -s tests`
+- [ ] Applicable Linux tests; describe headless, virtual-display, and real-desktop coverage separately
+- [ ] Build/frozen smoke when packaging, dependencies, or runtime integration changed
+- [ ] Reviewed publishable files for private paths, emails, credentials, settings, logs, and raw probes
 
-## User-facing changes
+## User-visible changes
 
-<!-- Tick all that apply, then update the listed files. Skip this section for internal-only changes.
-The CHANGELOG entry is added by the maintainer on merge - you don't need to edit it. -->
+<!-- Update affected documentation and the fork Unreleased changelog. Skip irrelevant items. -->
 
-- [ ] [`README.md`](../blob/main/README.md) feature list updated
-- [ ] [`docs/configuration.md`](../blob/main/docs/configuration.md) updated (if configuration changed)
-- [ ] Locale files in [`locale/`](../blob/main/locale/) updated (if user-visible strings changed)
+- [ ] README and privacy claims match the final behavior
+- [ ] Configuration/event documentation and locale strings match the implementation
+- [ ] Changelog describes user-visible features, fixes, or behavior changes
 
 ## Notes for reviewers
 
-<!-- Anything specific to look at, trade-offs made, follow-ups planned. Optional. -->
+<!-- Mention risks, lifecycle/concurrency implications, intentional dormant upstream scaffolding, and verification limits. Source changes do not authorize merge, release, deployment, or restart. -->

@@ -41,22 +41,12 @@ Follow **Conventional Commits** format with a descriptive body:
 - Never include code snippets or file contents in the message
 - Describe the change's purpose and impact, not implementation details
 
-# Examples
+# Example
 
 ```
-fix: use certifi for SSL certificate verification on model download
+fix: preserve dynamic quota labels after account changes
 
-On Windows, Python's urllib often fails to verify SSL certificates when downloading the Real-ESRGAN model due to missing system CA certificates. Using certifi provides Mozilla's trusted CA bundle, which resolves the SSL_CERTIFICATE_VERIFY_FAILED error.
+Keep provider-named windows visible when a new account reports a different quota set.
 ```
 
-```
-feat: add automatic token refresh to prevent session expiration
-
-Users were being logged out during active sessions when their access token expired. Automatic refresh keeps sessions alive without requiring re-authentication.
-```
-
-```
-refactor: rename user endpoints for REST consistency
-
-BREAKING CHANGE: /users/list renamed to /users, /users/get/:id renamed to /users/:id
-```
+Generate text only. Do not stage, commit, push, or publish. Git commit author name and email are public metadata; recommend a GitHub `noreply` email when privacy is desired.

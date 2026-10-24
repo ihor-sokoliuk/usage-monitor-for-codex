@@ -126,7 +126,9 @@ dl > div {
     & > dd { margin: 0; }
 }
 
-#usageBars {
+/* Rows of blocks: one per quota model, and the extra-usage bar next to the
+   prepaid balance.  The gap is the standard separator between blocks. */
+#usageBars, #extraRows {
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -196,6 +198,7 @@ footer {
     gap: 8px;
 
     & > #statusText {
+        flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -205,19 +208,19 @@ footer {
     & > #appVersion { flex-shrink: 0; }
 
     &.error > #statusText { color: var(--bar-fg-warn); }
+
+    & > #refreshBtn {
+        flex: 0 0 auto;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        font: inherit;
+        cursor: pointer;
+
+        &:disabled { cursor: default; }
+        &.refreshing { animation: refresh-spin 0.8s linear infinite; }
+    }
 }
 
-
-#statusText { flex: 1 1 auto; }
-#refreshBtn {
-    flex: 0 0 auto;
-    border: 0;
-    padding: 0;
-    color: inherit;
-    background: transparent;
-    font: inherit;
-    cursor: pointer;
-}
-#refreshBtn:disabled { cursor: default; }
-#refreshBtn.refreshing { animation: refresh-spin 0.8s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }

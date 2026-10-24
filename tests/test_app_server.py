@@ -60,6 +60,7 @@ def simple_body(operation):
     return operation.request('account/rateLimits/read', {})
 
 
+@unittest.skipUnless(sys.platform == 'win32', 'Windows discovery fixtures')
 class TestDiscoverCodexCommand(unittest.TestCase):
     """CLI discovery order: which -> LOCALAPPDATA installer -> npm -> error."""
 
@@ -220,6 +221,7 @@ class TestTransportCore(unittest.TestCase):
             with self.assertRaises(CodexCliNotFound):
                 transport.run_operation(simple_body)
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows Job containment')
     def test_job_object_failure_terminates_child_and_fails_startup(self):
         spawned = []
         real_popen = subprocess.Popen
@@ -412,3 +414,23 @@ class TestAtomicOperations(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestLinuxDiscoverCodexCommand(unittest.TestCase):
+    def test_native_user_bin_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            executable = home / '.local' / 'bin' / 'codex'
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            with patch.object(app_server_mod, 'IS_WINDOWS', False), \
+                 patch.object(app_server_mod.shutil, 'which', return_value=None), \
+                 patch.object(Path, 'home', return_value=home):
+                self.assertEqual(discover_codex_command(), [str(executable), 'app-server'])
+
+    def test_linux_missing_raises(self):
+        with patch.object(app_server_mod, 'IS_WINDOWS', False), \
+             patch.object(app_server_mod.shutil, 'which', return_value=None), \
+             patch.object(Path, 'is_file', return_value=False):
+            with self.assertRaises(CodexCliNotFound):
+                discover_codex_command()

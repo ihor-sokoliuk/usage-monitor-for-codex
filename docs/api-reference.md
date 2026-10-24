@@ -4,6 +4,16 @@ The monitor reads provider data from a local `codex app-server` child. The proto
 
 `codex app-server` is an experimental Codex interface. The monitor treats unknown errors as transient and reports method-not-found on required account methods as an outdated Codex CLI.
 
+## Implementation boundary
+
+| Module | Responsibility |
+|---|---|
+| [`api.py`](../usage_monitor_for_claude/api.py) | Normalize responses and classify provider states |
+| [`app_server.py`](../usage_monitor_for_claude/app_server.py) | Fixed JSONL RPCs, generation-atomic operations, and child lifecycle policy |
+| [`provider_process_windows.py`](../usage_monitor_for_claude/provider_process_windows.py) | Windows process spawning, Job ownership, and wait handles |
+| [`provider_process_linux.py`](../usage_monitor_for_claude/provider_process_linux.py) | Linux supervisor spawning and control-pipe integration |
+| [`_linux_supervisor.py`](../usage_monitor_for_claude/_linux_supervisor.py) | Linux descendant ownership, pidfd signals, and reaping |
+
 ## Methods used
 
 | Method | Purpose | Monitor behavior |
@@ -56,3 +66,13 @@ Names are collision-proof within the selected source. A duplicate snapshot name 
 ChatGPT authentication supplies the plan usage displayed by this monitor. Signed-out, API-key, Amazon Bedrock, and method-not-found states are classified separately. Unknown app-server error codes remain transient unless live wire evidence establishes an exact authentication-error predicate.
 
 The monitor never reads `auth.json`, an OS keyring, or credential-store metadata. All account state comes from `account/read`.
+
+## Child lifecycle
+
+A logical poll pins one app-server generation across every required RPC and retries the whole operation at most once after child death. A ten-minute TTL is checked between operations; it never interrupts an operation in progress. Account and usage snapshots enter the cache atomically. Signed-out/authentication-error scheduled polls recycle the child every tenth error-cadence poll; manual popup refreshes do not advance that counter.
+
+Windows contains the child in a kill-on-close Job object. Linux uses a dedicated supervisor, an inherited control pipe, a subreaper, `/proc` ancestry checks, and pidfds to terminate and reap its owned descendants when the monitor exits. Linux requires a modern kernel with pidfd support. A monitor crash or SIGKILL closes the control pipe; externally killing the supervisor itself with SIGKILL, including an OOM kill, remains a containment limitation compared with the Windows Job object.
+
+Shutdown first attempts orderly EOF-driven exit, then bounded forced cleanup if needed. A replacement or CLI update is deferred unless the old helper and its observed descendants are confirmed gone. Sanitized diagnostics record local helper process IDs, generations, lifecycle reasons and outcomes, and shutdown elapsed times.
+
+The separately invoked official `codex update` command is serialized against provider operations after child shutdown. It is an updater, not a provider RPC or authentication-recovery mechanism.

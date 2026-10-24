@@ -53,7 +53,9 @@ function init(config) {
         extraSection: document.getElementById('extraSection'),
         extraSpent: document.getElementById('extraSpent'),
         extraPct: document.getElementById('extraPct'),
+        extraBarContainer: document.getElementById('extraBarContainer'),
         extraFill: document.getElementById('extraFill'),
+        extraBalance: document.getElementById('extraBalance'),
         installSection: document.getElementById('installSection'),
         installRows: document.getElementById('installRows'),
         statusSection: document.getElementById('statusSection'),
@@ -70,24 +72,50 @@ function setupRefreshButton() {
     refreshBtn.title = translations.refresh;
 
     refreshBtn.addEventListener('click', async () => {
-        if (refreshPending) {
+        if (refreshBtn.disabled) {
             return;
         }
 
         refreshPending = true;
-        refreshBtn.disabled = true;
-        refreshBtn.classList.add('refreshing');
+        renderRefreshButton();
         try {
-            const data = await pywebview.api.refresh();
-            updateData(data);
+            await pywebview.api.refresh();
         } catch (_error) {
             // The existing snapshot stays visible when a manual refresh fails.
         } finally {
             refreshPending = false;
-            refreshBtn.disabled = false;
-            refreshBtn.classList.remove('refreshing');
+            renderRefreshButton();
         }
     });
+    renderRefreshButton();
+}
+
+/** Return the localized reason a manual refresh must wait. */
+function refreshWaitText() {
+    const seconds = Math.ceil((statusState.manualRefreshRetryAt || 0) - Date.now() / 1000);
+    if (seconds <= 0) {
+        return '';
+    }
+    const messages = {
+        reset: translations.refresh_deferred_reset,
+        cooldown: translations.refresh_cooldown,
+        backoff: translations.refresh_backoff,
+    };
+    const message = messages[statusState.manualRefreshReason];
+    return message ? message.replace('{duration}', formatCountdown(seconds)) : '';
+}
+
+/** Keep popup and tray refresh state consistent with the latest snapshot. */
+function renderRefreshButton() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    if (!refreshBtn) {
+        return;
+    }
+    const loading = refreshPending || !!statusState.refreshing;
+    const waiting = (statusState.manualRefreshRetryAt || 0) > Date.now() / 1000;
+    refreshBtn.disabled = loading || waiting;
+    refreshBtn.classList.toggle('refreshing', loading);
+    refreshBtn.title = refreshWaitText() || (loading ? translations.status_refreshing : translations.refresh);
 }
 
 function setupPinButton() {
@@ -212,8 +240,12 @@ function updateData(data) {
     els.extraSection.classList.toggle('visible', extraVisible);
     if (hasExtra) {
         els.extraSpent.textContent = data.extra.spent_text;
+        els.extraPct.style.display = data.extra.has_limit ? '' : 'none';
         els.extraPct.textContent = data.extra.pct_text;
+        els.extraBarContainer.style.display = data.extra.has_limit ? '' : 'none';
         els.extraFill.style.width = `${data.extra.fill_pct * 100}%`;
+        els.extraBalance.textContent = data.extra.balance_text || '';
+        els.extraBalance.style.display = data.extra.balance_text ? '' : 'none';
     }
 
     const hasInstalls = !!data.installations?.length;
@@ -252,6 +284,8 @@ function updateStatus(status) {
     }
 
     if (!status) {
+        statusState = {};
+        renderRefreshButton();
         els.statusSection.classList.remove('visible');
         return;
     }
@@ -260,21 +294,20 @@ function updateStatus(status) {
     // view, so the stale-dimming of the usage bars still updates.
     els.statusSection.classList.toggle('visible', !compactHidden('status'));
 
-    if (status.last_success_time !== undefined) {
-        statusState = {
-            lastSuccessTime: status.last_success_time,
-            nextPollTime: status.next_poll_time,
-            refreshing: status.refreshing,
-            error: status.error,
-        };
-        els.statusSection.classList.toggle('error', !!status.error);
-        tickStatusText();
+    statusState = {
+        lastSuccessTime: status.last_success_time,
+        nextPollTime: status.next_poll_time,
+        refreshing: status.refreshing,
+        error: status.error,
+        text: status.text,
+        isError: status.is_error,
+        manualRefreshReason: status.manual_refresh_reason,
+        manualRefreshRetryAt: status.manual_refresh_retry_at,
+    };
+    els.statusSection.classList.toggle('error', !!(status.error || status.is_error));
+    tickStatusText();
+    if (status.last_success_time !== undefined || status.manual_refresh_retry_at) {
         textTimerId = setInterval(tickStatusText, 1000);
-    } else {
-        statusState = {};
-        els.statusText.textContent = status.text || '';
-        els.statusText.title = status.is_error ? (status.text || '') : '';
-        els.statusSection.classList.toggle('error', !!status.is_error);
     }
 }
 
@@ -286,7 +319,14 @@ function updateStatus(status) {
  * + refreshing or error appended with · separator
  */
 function tickStatusText() {
-    if (!statusState.lastSuccessTime) return;
+    renderRefreshButton();
+    const waitText = refreshWaitText();
+    if (typeof statusState.lastSuccessTime !== 'number') {
+        const parts = [statusState.text, waitText].filter(Boolean);
+        els.statusText.textContent = parts.join(' \u00b7 ');
+        els.statusText.title = statusState.isError || waitText ? els.statusText.textContent : '';
+        return;
+    }
 
     const now = Date.now() / 1000;
     const secondsAgo = Math.max(0, Math.floor(now - statusState.lastSuccessTime));
@@ -306,10 +346,13 @@ function tickStatusText() {
             parts.push(translations.status_next_update.replace('{duration}', formatCountdown(secondsUntil)));
         }
     }
+    if (waitText) {
+        parts.push(waitText);
+    }
 
     els.statusText.textContent = parts.join(' \u00b7 ');
     // Errors are raw API messages that can overflow; reveal the full text on hover.
-    els.statusText.title = statusState.error ? els.statusText.textContent : '';
+    els.statusText.title = statusState.error || waitText ? els.statusText.textContent : '';
 }
 
 /**
@@ -352,6 +395,9 @@ function formatCountdown(totalSeconds) {
 }
 
 function updateUsageBars(entries) {
+    // Rebuild whenever the field set changes, not only the count - after an
+    // account switch the same number of bars can carry different quotas, and
+    // an in-place update would show the new values under the old labels.
     const bars = els.usageBars.children;
     const sameFields = entries.length === bars.length
         && entries.every((entry, i) => bars[i].dataset.key === entry.key);

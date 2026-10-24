@@ -12,16 +12,21 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .api import fetch_provider_data, refresh_profile as adapter_refresh_profile, shutdown_transport
+from .app_server import TransportError
 from .codex_cli import CliUpdateResult, update_cli
 from .i18n import T
 from .settings import MAX_BACKOFF, POLL_FAST, POLL_INTERVAL
 
-__all__ = ['CacheSnapshot', 'UpdateResult', 'UsageCache']
+__all__ = ['CacheSnapshot', 'MANUAL_REFRESH_INTERVAL', 'RESET_BUFFER', 'UpdateResult', 'UsageCache']
 
 log = logging.getLogger(__name__)
+MANUAL_REFRESH_INTERVAL = 30
+# Allow the new quota window to propagate before the confirming poll.
+RESET_BUFFER = 5
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,8 @@ class CacheSnapshot:
     refreshing: bool
     last_error: str | None
     version: int
+    manual_refresh_reason: str | None = None
+    manual_refresh_retry_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class UsageCache:
         self._consecutive_errors = 0
         self._recovery_attempted = False
         self._rate_limit_until: float = 0
+        self._last_attempt_monotonic: float | None = None
 
     # Public properties
 
@@ -112,6 +120,7 @@ class UsageCache:
     def snapshot(self) -> CacheSnapshot:
         """Return a consistent snapshot for the popup to display."""
         with self._state_lock:
+            reason, retry_at = self._manual_refresh_state(time.time())
             return CacheSnapshot(
                 usage=self._usage,
                 profile=self._profile,
@@ -119,6 +128,8 @@ class UsageCache:
                 refreshing=self._refreshing,
                 last_error=self._last_error,
                 version=self._version,
+                manual_refresh_reason=reason,
+                manual_refresh_retry_at=retry_at,
             )
 
     # Public methods
@@ -168,7 +179,11 @@ class UsageCache:
     def update_codex_cli(self) -> CliUpdateResult:
         """Stop provider operations and run the official Codex self-updater."""
         with self._lock:
-            shutdown_transport()
+            try:
+                shutdown_transport()
+            except TransportError:
+                log.warning('codex update deferred; child exit is unconfirmed')
+                return CliUpdateResult(False, False, '', '', 'App-server shutdown incomplete')
             return update_cli()
 
     def update(self, *, manual: bool = False, force: bool = False) -> UpdateResult:
@@ -177,7 +192,8 @@ class UsageCache:
         Parameters
         ----------
         manual : bool
-            Bypass only the successful-fetch cooldown; retain rate-limit backoff.
+            Wait for an in-progress usage operation. Allow an early fetch
+            only outside the manual floor and reset window, retaining backoff.
         force : bool
             When True, bypass the ``POLL_FAST`` cooldown and retained
             rate-limit backoff for this single fetch. Used only after a
@@ -190,7 +206,7 @@ class UsageCache:
             Contains the provider response dict (``data``), or ``None``
             when the call was skipped.
         """
-        if not self._lock.acquire(blocking=False):
+        if not self._lock.acquire(blocking=manual):
             log.debug('update skipped (another update in progress)')
             return UpdateResult(data=None)
 
@@ -200,6 +216,43 @@ class UsageCache:
             self._lock.release()
 
     # Private helpers
+
+    def _manual_refresh_state(self, now: float) -> tuple[str | None, float | None]:
+        """Return a withheld manual request's reason and retry timestamp.
+
+        Called while holding ``_state_lock``. A monotonic completion clock
+        keeps wall-clock adjustments from shortening the manual floor.
+        """
+        if now < self._rate_limit_until:
+            return 'backoff', self._rate_limit_until
+
+        if self._last_success_time is not None:
+            resets = []
+            for entry in self._usage.values():
+                if not isinstance(entry, dict) or not entry.get('resets_at'):
+                    continue
+                try:
+                    reset = datetime.fromisoformat(entry['resets_at'])
+                    if reset.utcoffset() is None:
+                        continue
+                    reset_at = reset.timestamp()
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if -RESET_BUFFER < reset_at - now < POLL_FAST:
+                    resets.append(reset_at + RESET_BUFFER)
+            if resets:
+                return 'reset', max(resets)
+
+        if self._last_attempt_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - self._last_attempt_monotonic)
+        elif self._last_success_time is not None:
+            elapsed = max(0.0, now - self._last_success_time)
+        else:
+            return None, None
+        remaining = MANUAL_REFRESH_INTERVAL - elapsed
+        if remaining > 0:
+            return 'cooldown', now + remaining
+        return None, None
 
     def _update_locked(self, *, manual: bool = False, force: bool = False) -> UpdateResult:
         """Execute the actual update while holding ``_lock``."""
@@ -217,6 +270,13 @@ class UsageCache:
             log.debug('update skipped (rate-limit backoff, %.0fs remaining)', self._rate_limit_until - time.time())
             return UpdateResult(data=None)
 
+        if manual and not force:
+            with self._state_lock:
+                reason, _retry_at = self._manual_refresh_state(now)
+            if reason is not None:
+                log.debug('manual update deferred (%s)', reason)
+                return UpdateResult(data=None)
+
         with self._state_lock:
             self._refreshing = True
             self._version += 1
@@ -228,6 +288,10 @@ class UsageCache:
             data = {'error': T['connection_error']}
             self._record_error_state(data, None, False)
             return UpdateResult(data=data)
+        finally:
+            with self._state_lock:
+                self._last_attempt_monotonic = time.monotonic()
+                self._version += 1
 
     def _fetch_and_process(self) -> UpdateResult:
         """Fetch usage and profile together and process one provider result."""

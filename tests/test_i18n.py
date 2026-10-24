@@ -109,21 +109,31 @@ class TestDetectLangCode(unittest.TestCase):
         self.assertEqual(detect_lang_code('Ukrainian_Ukraine'), 'uk')
 
     def test_chinese_simplified_windows_name(self, _mock_norm):
+        """Simplified Chinese Windows display name resolves to zh-CN."""
         self.assertEqual(detect_lang_code('Chinese (Simplified)_China'), 'zh-CN')
 
     def test_chinese_traditional_windows_name(self, _mock_norm):
+        """Traditional Chinese Windows display name resolves to zh-TW."""
         self.assertEqual(detect_lang_code('Chinese (Traditional)_Taiwan'), 'zh-TW')
 
     def test_chinese_traditional_hong_kong_windows_name(self, _mock_norm):
+        """Hong Kong SAR resolves to the traditional-script file."""
         self.assertEqual(detect_lang_code('Chinese (Traditional)_Hong Kong SAR'), 'zh-TW')
 
+    def test_chinese_simplified_singapore_windows_name(self, _mock_norm):
+        """Singapore resolves to the simplified-script file."""
+        self.assertEqual(detect_lang_code('Chinese (Simplified)_Singapore'), 'zh-CN')
+
     def test_chinese_taiwan_without_script_windows_name(self, _mock_norm):
+        """A script-less 'Chinese_Taiwan' name resolves via the region to zh-TW."""
         self.assertEqual(detect_lang_code('Chinese_Taiwan'), 'zh-TW')
 
     def test_hindi_windows_name(self, _mock_norm):
+        """Hindi Windows display name resolves to hi."""
         self.assertEqual(detect_lang_code('Hindi_India'), 'hi')
 
     def test_indonesian_windows_name(self, _mock_norm):
+        """Indonesian Windows display name resolves to id."""
         self.assertEqual(detect_lang_code('Indonesian_Indonesia'), 'id')
 
     def test_base_code_without_region(self, _mock_norm):
@@ -263,6 +273,22 @@ class TestLocaleConsistency(unittest.TestCase):
                     f'{lang}.json key "{key}": placeholders {lang_placeholders} != expected {en_placeholders}',
                 )
 
+    def test_auth_messages_end_with_the_login_command(self):
+        """Every locale must hand the user the command that fixes a missing login.
+
+        The command is what makes these messages actionable, so it has to
+        survive translation verbatim and stay at the end, where a reader
+        looks for it.
+        """
+        keys = ('auth_expired', 'auth_expired_short', 'no_token', 'warn_login')
+
+        for lang, data in self.translations.items():
+            for key in keys:
+                self.assertTrue(
+                    data[key].endswith('codex login'),
+                    f'{lang}.json key "{key}" does not end with the login command: {data[key]!r}',
+                )
+
     def test_no_empty_translations(self):
         """No translation value should be an empty string."""
         for lang, data in self.translations.items():
@@ -284,7 +310,7 @@ class TestLocaleConsistency(unittest.TestCase):
 
 
 class TestCodexCopy(unittest.TestCase):
-    REMOVED_KEYS = {'notify_update_title', 'notify_update', 'server_error', 'http_error'}
+    REQUIRED_KEYS = {'notify_cli_update_title', 'notify_cli_update', 'codex_cli_too_old', 'codex_cli_not_found'}
 
     def test_no_claude_or_anthropic_in_values(self):
         for locale_file in sorted(LOCALE_DIR.glob('*.json')):
@@ -296,10 +322,10 @@ class TestCodexCopy(unittest.TestCase):
                         self.assertNotIn('claude', item.lower(), locale_file.name)
                         self.assertNotIn('anthropic', item.lower(), locale_file.name)
 
-    def test_removed_keys_absent_everywhere(self):
+    def test_codex_provider_copy_present_everywhere(self):
         for locale_file in sorted(LOCALE_DIR.glob('*.json')):
             data = json.loads(locale_file.read_text(encoding='utf-8'))
-            self.assertFalse(self.REMOVED_KEYS & set(data), locale_file.name)
+            self.assertTrue(self.REQUIRED_KEYS <= set(data), locale_file.name)
 
 
 if __name__ == '__main__':

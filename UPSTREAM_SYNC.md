@@ -1,72 +1,109 @@
-# Upstream Sync Ledger
+# Upstream Reconciliation Ledger
 
 - Upstream: https://github.com/jens-duttke/usage-monitor-for-claude
-- Port baseline: `f9224c2667ce7210464590d1e5e3f5d8637c8c69`
-- Last reviewed upstream SHA: `a3503e9a49c0028d8c5db6897dcd3964746bdd15`
+- Previous complete review point: `a3503e9a49c0028d8c5db6897dcd3964746bdd15`
+- Owner-authorized full-rebase target: `5cbccc5e6f20a03efbc6779cc3c6d8e621acdef2`
+- Original Codex tip: `cbd5996`
+- Fork product version is `1.24.0`, aligned with upstream at the owner's follow-up request. Publishing source and updating the local application do not imply a release tag or GitHub release.
 
-This fork imports upstream UI/UX and provider-neutral fixes selectively. It never syncs the Claude provider implementation wholesale.
+## Scope and policy
 
-## One-time setup
+The owner authorized a complete isolated rebase including Linux on 2026-10-23. This supersedes the earlier selective-only and Windows-only migration policy. Preserve the complete upstream history and use its current platform/UI structure as the foundation. Adapt provider-specific behavior to fixed local Codex app-server stdio. Do not restore credential-store inspection, direct provider HTTP, unsupported billing/prepaid data, upstream application identity, or upstream publication targets.
 
-Run these commands manually from the Windows clone:
+The initial migration scope excluded publication and live runtime changes. The owner subsequently authorized source commits and a push to the fork, version alignment with upstream, and replacement of the local running application on 2026-10-23. Preserve the primary checkout and its existing user changes. Publish through a branch and pull request without rewriting published history. A release tag, GitHub release, force-push, or pull-request merge still requires separate authorization.
 
-```powershell
-git remote add upstream https://github.com/jens-duttke/usage-monitor-for-claude.git
-git remote set-url --push upstream https://example.invalid/disabled
-git fetch upstream --tags
-git config rerere.enabled true
-```
+## Reconciliation method
 
-If `upstream` already exists, verify `git remote -v` instead of adding it again. The disabled push URL is a safety guard; this fork never pushes to the upstream repository.
+1. Pin both source heads and enumerate the entire commit range without a path filter.
+2. Classify every commit, including docs, merges, releases and infrastructure. Review full patches where needed and reconcile every changed path against the complete upstream tree.
+3. Preserve native Windows behavior and explicit Linux backends. Keep Codex quota/account/cache invariants, provider lifecycle, CLI discovery/update, sanitized logs and per-home identity.
+4. Verify the rebased baseline independently before carrying any pending user change as an uncommitted overlay. Run full native Windows and applicable Linux suites; distinguish headless, virtual-X11/D-Bus and real-desktop checks.
+5. Build and smoke-test Windows only with native Windows Python. Use synthetic isolated homes for identity checks, never live credential manipulation. Review final diffs and private-data scans before handoff.
+6. Record exact verification separately. A disposition below records the design reconciliation; it is not by itself proof of successful runtime validation.
 
 ## Fork path map
 
-| Upstream | Fork | Rule |
+| Upstream | Fork disposition |
+|---|---|
+| `claude_cli.py` and its tests | `codex_cli.py`, Codex discovery/version/update only |
+| Direct provider HTTP in `api.py` | Codex normalization/classification in `api.py` and local `app_server.py` transport |
+| Provider process containment | `provider_process_windows.py`, `provider_process_linux.py`, and `_linux_supervisor.py` isolate platform ownership and cleanup |
+| Credential/token refresh machinery | Removed; account state and bounded recovery come from app-server RPCs |
+| `usage_monitor_for_claude.spec` and product icon | Codex spec, executable, and icon |
+| `usage-monitor-for-claude` source launcher | `usage-monitor-for-codex`; internal module remains `usage_monitor_for_claude` |
+| Platform identity, autostart, lock/mutex, notification logo | Distinct Codex names and per-home suffixes |
+| Extra usage, currency and prepaid display | Dormant compatibility scaffolding only; no Codex data or active guide |
+| Upstream WinGet publisher/watcher | Removed; no fork registration or credentials are assumed |
+| Optional local signing | Retained, disabled without owner-supplied ignored signing configuration |
+| Fork `codex-v*` release workflow | Retained; derives release notes from fork changelog and links to fork README |
+
+## Complete upstream commit inventory
+
+The 51 commits after the previous review point through the pin are all represented below. **Applied** preserves provider-neutral upstream behavior; **adapted** retains the change with Codex semantics; **dormant** retains only historical/inert scaffolding; **infrastructure-only** preserves history while reconciling fork tooling and publication policy.
+
+| Commit | Disposition | Reconciliation |
 |---|---|---|
-| `usage_monitor_for_claude/claude_cli.py` | `usage_monitor_for_claude/codex_cli.py` | Manually translate discovery/version changes |
-| `tests/test_claude_cli.py` | `tests/test_codex_cli.py` | Keep tests aligned with the renamed module |
-| `usage_monitor_for_claude.spec` | `usage_monitor_for_codex.spec` | Preserve Codex executable/icon identity |
-| `usage_monitor_for_claude.ico` | `usage_monitor_for_codex.ico` | Never restore the Claude icon |
-| Claude OAuth client in `api.py` | Codex adapter in `api.py` plus transport in `app_server.py` | Never cherry-pick provider code blindly |
-| Claude token/credential refresh machinery | Deleted | Codex app-server owns authentication |
-| `docs/automatic-update-check.md` | Deleted | Optional monitor release-check guide is outside v1 scope |
+| `32444c8` | dormant | feat: support uncapped extra usage (popup display, tray indicator, spend-amount alerts) (#70) - Extra-usage UI retained as dormant scaffolding; Codex data cannot activate it. |
+| `3ff45f9` | dormant | docs: credit @joeklittle and note extra-usage spend alerts in the feature list - Historical credit retained; no active Codex spending feature is advertised. |
+| `aecd497` | adapted | docs: qualify the read-only claim in README and PRIVACY.md - Document local writes and external Codex, updater, webview and command boundaries. |
+| `9f1b422` | applied | feat: add numbers icon style with two stacked percentages (#78) - Retain complete upstream behavior and relevant regression coverage. |
+| `d5fc89d` | adapted | fix: refresh usage data immediately after an account switch - Preserve atomic Codex account/usage operations, auth revisions and bounded child refresh. |
+| `1b10ab9` | infrastructure-only | ci: publish new releases to WinGet automatically - Upstream WinGet publisher removed; no fork package registration or token is assumed. |
+| `64fdff8` | adapted | fix: decode Claude CLI output as UTF-8 regardless of the system code page - Decode Codex CLI diagnostics/version output as UTF-8 without logging raw output. |
+| `87d89b2` | infrastructure-only | chore: release v1.21.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
+| `48b9de7` | infrastructure-only | docs: document the WinGet install path and monitor that channel - Retain historical upstream notes; remove active upstream WinGet installation claims. |
+| `869f51c` | applied | fix: end the replaced instance with a success exit code - Retain complete upstream behavior and relevant regression coverage. |
+| `3e2cfc3` | applied | docs: cut justification prose and duplication from the documentation - Retain complete upstream behavior and relevant regression coverage. |
+| `501c3ea` | infrastructure-only | chore: point feature requests to Discussions from the issue chooser - Issue chooser targets the fork and its README antivirus section. |
+| `eecd55c` | adapted | feat: add Linux support alongside Windows - Retain platform separation; add Codex Linux provider supervisor and identities. |
+| `0ca00a6` | adapted | feat: start the Linux app from any directory with a launcher script - Rename source launcher to usage-monitor-for-codex; retain internal package name. |
+| `8a8df15` | applied | fix: run on_reset_command when the reset quota has no active window - Retain complete upstream behavior and relevant regression coverage. |
+| `b00aede` | adapted | fix: verify TLS certificates against the Windows certificate store - Direct provider HTTP/TLS client and truststore dependency removed; Codex owns networking. |
+| `7030a81` | adapted | fix: restore the Windows test suite after the platform split - Platform tests use their native backend while retaining Codex regressions. |
+| `b5fc52a` | infrastructure-only | chore: release v1.22.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
+| `d89df18` | infrastructure-only | chore: add preflight and build verification to the release command - Retain release preflight/verification guidance; fork owner publishes separately. |
+| `4344671` | infrastructure-only | chore: add a temporary token diagnostic workflow - Temporary upstream diagnostic workflow remains historical only. |
+| `3b4a001` | infrastructure-only | chore: trigger the token diagnostic on push - Temporary upstream diagnostic trigger remains historical only. |
+| `2851b30` | infrastructure-only | chore: fix the diagnostic workflow syntax - Temporary upstream diagnostic fix remains historical only. |
+| `c374112` | infrastructure-only | chore: remove the temporary token diagnostic workflow - Final upstream tree already removes the temporary diagnostic workflow. |
+| `4f49926` | infrastructure-only | chore: note the winget-pkgs fork sync the submission depends on - Upstream package-fork synchronization does not apply to this fork. |
+| `bcc7bde` | adapted | fix: keep polling on a reduced cadence while idle or locked - Keep reduced away polling, capped at 600 seconds for Codex TTL and auth freshness. |
+| `7f15085` | adapted | fix: keep verbose output in the caller's stdout/stderr redirection - Retain caller redirection and Codex sanitized rotating logging. |
+| `39bba11` | adapted | fix: name the CLI and the login command in the auth messages - All active authentication messages name Codex CLI and codex login. |
+| `8d7899e` | dormant | feat: show the prepaid usage-credits balance in the popup (#82) - Prepaid fetch removed; credits dropped before popup serialization. |
+| `9e6ab88` | adapted | docs: explain the antivirus false positive above the download link - Explain checksums and potential detections without asserting every warning is false. |
+| `3c5308d` | adapted | docs: list the Codex and Copilot monitors as related projects - Preserve upstream attribution and use fork product/release links. |
+| `fe1b3b8` | adapted | Merge branch 'main' of https://github.com/jens-duttke/usage-monitor-for-claude - Retain complete merged upstream ancestry; reconcile final tree to Codex. |
+| `259393e` | adapted | docs: name the plans the monitor covers - Describe ChatGPT usage and explicit non-ChatGPT authentication states. |
+| `61fc445` | adapted | fix: hide quota types the API announces but has not activated (#91) - Use normalized Codex quota dictionaries; retain valid duration-less windows. |
+| `3bd6d62` | adapted | docs: state which quota types get a bar and event variables - Describe arbitrary normalized quota fields and dynamic event variables. |
+| `063758d` | adapted | refactor: derive the config directory from instance_id everywhere (#96) - Use Codex-home derivation and per-home identities on both platforms. |
+| `b4a258f` | adapted | docs: log the verbose redaction fix for a symlinked home directory - Retain sanitized path diagnostics without credential metadata. |
+| `62242da` | infrastructure-only | feat: code sign the release EXE - Retain optional local signing and tests; no certificate/public signing claim is assumed. |
+| `987fc00` | infrastructure-only | chore: release v1.23.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
+| `84270bb` | adapted | fix: show windows notifications under the app's own identity - Use distinct Codex notification identity and Codex notification logo. |
+| `07d581d` | applied | feat: open the popup on a left-click on KDE Plasma (#102) - Retain complete upstream behavior and relevant regression coverage. |
+| `4a2cd6e` | applied | fix: open the popup above a bottom panel on Linux (#103) - Retain complete upstream behavior and relevant regression coverage. |
+| `6336b31` | applied | docs: log the bottom-panel popup fix on Linux - Retain complete upstream behavior and relevant regression coverage. |
+| `fd40bec` | applied | fix: reuse the popup window on Linux instead of creating one per opening (#106) - Retain complete upstream behavior and relevant regression coverage. |
+| `86e4723` | applied | fix: return a pointer-sized LRESULT from the popup's low-level hooks (#105) - Retain complete upstream behavior and relevant regression coverage. |
+| `e1be0c6` | applied | Merged - thank you, @nerfarrow! This was an excellent contribution. The register-level reproduction in #104 made the root cause easy to verify, and the fix is minimal and well-tested. I could reproduce the mechanism on Python 3.12.10 here, and the new `TestHookSignatures` fail as soon as `_LRESULT` is narrowed back to `c_long`. - Retain complete upstream behavior and relevant regression coverage. |
+| `39886b1` | adapted | docs: show the PowerShell variant for collecting the verbose log - Use Codex diagnostic names and document existing adjacent sanitized logs. |
+| `5f27127` | applied | fix: size the popup to the scale WebKit renders at on X11 (#107) - Retain complete upstream behavior and relevant regression coverage. |
+| `6c176f1` | dormant | perf: read the prepaid balance only while the popup is open - No Codex prepaid request exists; lazy upstream billing read is removed. |
+| `31e2b32` | infrastructure-only | chore: release v1.24.0 - Retain historical upstream release notes; align the fork version separately at the owner's request. |
+| `045079f` | applied | feat: support popup field exclusions (#113) - Retain complete upstream behavior and relevant regression coverage. |
+| `5cbccc5` | applied | docs: credit the reporter and contributor of popup field exclusions - Retain complete upstream behavior and relevant regression coverage. |
 
-The Python package directory intentionally remains `usage_monitor_for_claude` so provider-neutral UI diffs stay reviewable.
+## Full-rebase integration record
 
-## Prohibited sync operations
+The isolated rebase completed at `ca80f5e` with pinned upstream `5cbccc5` retained as an ancestor. Fork commits `aec42db`, `c2869fe`, and `4a5d0af` were skipped during replay because their final changes were already integrated into the reconciled initial port. The original primary branch and checkout were preserved. The owner's pending shutdown change was carried as an uncommitted overlay after independent baseline validation.
 
-- Never use GitHub's one-click **Sync fork**.
-- Never merge or rebase `upstream/main` wholesale into this fork.
-- Never force-push, reset, or discard local work to match upstream.
-- Never resolve a conflict by restoring Anthropic endpoints, credential-file access, token handling, `claude update`, Claude identity constants, branding, release links, or dependencies removed by the Codex port.
-- Agents never run commit-producing cherry-picks. The user performs history operations after reviewing the proposed import.
+Native Windows and Linux baseline suites passed. Linux also exercised the real source module entrypoint with GTK/WebKit, AppIndicator, Xvfb/Openbox and D-Bus inside a network-disabled container. Synthetic provider and notification services supplied three quota fields and exercised startup/quick-action commands, popup pinning, restart, quit, owned-process cleanup, and survival of an unrelated sentinel process. These checks do not validate actual GNOME/KDE/Wayland sessions or desktop-panel interactions; Linux remains experimental. Final overlay verification, Windows frozen smoke, and exact test counts belong to the handoff evidence rather than this inventory.
 
-## Review flow
+## Earlier selective-port history
 
-1. Fetch without changing the worktree:
-
-   ```powershell
-   git fetch upstream --tags
-   ```
-
-2. Enumerate every commit in the full range. Do not add a path filter here; mixed UI commits can touch `app.py`, settings, tests, or docs:
-
-   ```powershell
-   git log --oneline --reverse <last-reviewed-sha>..upstream/main
-   ```
-
-3. Inspect each commit with `git show --stat <sha>` and then its full patch. Classify it as UI-only, mixed UI/provider, Claude backend, docs, or irrelevant.
-4. Record skipped commits and the reason in **Review history**. Advance the last-reviewed SHA only after every commit through that SHA has been classified.
-5. Create a temporary import branch. For a genuinely UI-only commit, the user may run `git cherry-pick -x <sha>`. Manually port only the provider-neutral portion of mixed commits.
-6. Review every conflict against `AGENTS.md` and the revision-5 design. Preserve the Codex adapter, app-server lifecycle, no-credential boundary, Windows identities, and fork URLs.
-7. After each imported change, run the full native-Windows unit suite, perform a clean build and frozen smoke, then run the official Claude EXE beside the Codex EXE and verify independent icons, mutexes, autostart entries, settings, restart, and quit behavior.
-8. Add one **Imported changes** row per upstream commit incorporated and update the last-reviewed SHA.
-
-Useful second-pass path view after the full commit enumeration:
-
-```powershell
-git log --oneline <last-reviewed-sha>..upstream/main -- usage_monitor_for_claude/app.py usage_monitor_for_claude/popup.py usage_monitor_for_claude/popup usage_monitor_for_claude/tray_icon.py usage_monitor_for_claude/formatting.py usage_monitor_for_claude/settings.py locale tests docs README.md CHANGELOG.md
-```
+The following entries describe the historical migration before this full rebase. Their selective-policy wording is historical and does not override the scope above.
 
 ## Review history
 

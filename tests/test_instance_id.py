@@ -6,6 +6,7 @@ Unit tests for --codex-home parsing and per-instance name suffixes.
 """
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -43,15 +44,22 @@ class TestParseConfigDir(unittest.TestCase):
         self.assertEqual(parse_codex_home(['app.exe', '--codex-home=C:\\dir\\']), r'C:\dir')
 
     def test_expands_environment_variables(self):
-        """%VAR% syntax works even from shells that do not expand it (PowerShell)."""
-        with patch.dict('os.environ', {'USERPROFILE': r'C:\Users\test'}):
-            result = parse_codex_home(['app.exe', '--codex-home=%USERPROFILE%\\.codex-second'])
-        self.assertEqual(result, r'C:\Users\test\.codex-second')
+        """Native shell variable syntax is expanded before selecting the home."""
+        with TemporaryDirectory() as directory:
+            expression = '%CODEX_TEST_HOME%' if os.name == 'nt' else '$CODEX_TEST_HOME'
+            with patch.dict('os.environ', {'CODEX_TEST_HOME': directory}):
+                result = parse_codex_home(['app', '--codex-home=' + expression + '/.codex-second'])
+            self.assertEqual(result, str(Path(directory) / '.codex-second'))
 
     def test_expands_tilde(self):
-        with patch.dict('os.environ', {'USERPROFILE': r'C:\Users\test'}):
-            result = parse_codex_home(['app.exe', '--codex-home=~/.codex-second'])
-        self.assertEqual(result, r'C:\Users\test\.codex-second')
+        with TemporaryDirectory() as directory:
+            with patch.dict('os.environ', {'HOME': directory, 'USERPROFILE': directory}):
+                result = parse_codex_home(['app', '--codex-home=~/.codex-second'])
+            self.assertEqual(result, str(Path(directory) / '.codex-second'))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX root syntax')
+    def test_posix_root_keeps_separator(self):
+        self.assertEqual(parse_codex_home(['app', '--codex-home=/']), '/')
 
     def test_last_occurrence_wins(self):
         argv = ['app.exe', '--codex-home=C:\\first', '--codex-home=C:\\second']
@@ -94,6 +102,7 @@ class TestConfigDirSuffix(unittest.TestCase):
         self.assertTrue(suffix.startswith('_'))
         self.assertEqual(len(suffix), 13)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows case-insensitive identity')
     def test_suffix_stable_across_casing_and_trailing_slash(self):
         with TemporaryDirectory() as config_tmp:
             with patch.dict('os.environ', {'CODEX_HOME': config_tmp}):
@@ -101,6 +110,15 @@ class TestConfigDirSuffix(unittest.TestCase):
             with patch.dict('os.environ', {'CODEX_HOME': config_tmp.upper() + '\\'}):
                 suffix_variant = config_dir_suffix()
         self.assertEqual(suffix_plain, suffix_variant)
+
+    @unittest.skipIf(os.name == 'nt', 'Linux case-sensitive identity')
+    def test_linux_case_distinct_homes_have_distinct_identities(self):
+        with TemporaryDirectory() as directory:
+            with patch.dict('os.environ', {'CODEX_HOME': str(Path(directory) / 'account')}):
+                lower = config_dir_suffix()
+            with patch.dict('os.environ', {'CODEX_HOME': str(Path(directory) / 'ACCOUNT')}):
+                upper = config_dir_suffix()
+            self.assertNotEqual(lower, upper)
 
     def test_different_dirs_produce_different_suffixes(self):
         with TemporaryDirectory() as dir_a, TemporaryDirectory() as dir_b:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from usage_monitor_for_claude.api import ProviderFetchResult
@@ -175,8 +176,9 @@ class TestSuccessState(unittest.TestCase):
     def test_success_clears_refreshing_flag(self):
         self.assertFalse(self._updated().refreshing)
 
-    def test_success_increments_version_twice(self):
-        self.assertEqual(self._updated().version, 2)
+    def test_success_publishes_loading_result_and_manual_availability(self):
+        """Completion publishes the new manual request deadline after the usage result."""
+        self.assertEqual(self._updated().version, 3)
 
 
 class TestErrorState(unittest.TestCase):
@@ -230,11 +232,12 @@ class TestErrorState(unittest.TestCase):
             cache.update()
         self.assertFalse(cache.refreshing)
 
-    def test_error_increments_version_twice(self):
+    def test_error_publishes_loading_result_and_manual_availability(self):
+        """A failed attempt also publishes its manual request deadline."""
         cache = _make_cache()
         with patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(_ERROR_DATA)):
             cache.update()
-        self.assertEqual(cache.version, 2)
+        self.assertEqual(cache.version, 3)
 
 
 class TestRefreshingFlag(unittest.TestCase):
@@ -622,35 +625,306 @@ class TestNullQuotaFields(unittest.TestCase):
 
 
 class TestManualRefreshBackoff(unittest.TestCase):
-    """Manual refresh bypasses the successful-fetch floor, never backoff."""
+    """Manual requests have a short floor and preserve provider polling guards."""
 
-    def test_cooldown_bypass_and_automatic_floor(self) -> None:
-        cache = _make_cache()
-        cache._last_success_time = 10000
-        with patch('usage_monitor_for_claude.cache.time.time', return_value=10001), \
-             patch.object(cache, '_fetch_and_process', return_value=UpdateResult(data={})) as fetch:
-            self.assertIsNone(cache.update().data)
-            fetch.assert_not_called()
-            self.assertEqual(cache.update(manual=True).data, {})
-            fetch.assert_called_once()
+    def setUp(self) -> None:
+        """Give each case independent provider data and controlled clocks."""
+        self.cache = _make_cache()
+        self.now = 1000.0
+        self.monotonic = 500.0
+        clock = patch('usage_monitor_for_claude.cache.time.time', side_effect=lambda: self.now)
+        monotonic = patch('usage_monitor_for_claude.cache.time.monotonic', side_effect=lambda: self.monotonic)
+        provider = patch('usage_monitor_for_claude.cache.fetch_provider_data', return_value=pfr(_SUCCESS_DATA, _PROFILE_A))
+        for active_patch in (clock, monotonic):
+            self.addCleanup(active_patch.stop)
+            active_patch.start()
+        self.addCleanup(provider.stop)
+        self.fetch = provider.start()
 
-    def test_manual_respects_backoff_force_keeps_account_switch_semantics(self) -> None:
-        cache = _make_cache()
-        cache._rate_limit_until = 10100
-        with patch('usage_monitor_for_claude.cache.time.time', return_value=10001), \
-             patch.object(cache, '_fetch_and_process', return_value=UpdateResult(data={})) as fetch:
-            self.assertIsNone(cache.update(manual=True).data)
-            fetch.assert_not_called()
-            self.assertEqual(cache.update(force=True).data, {})
-            fetch.assert_called_once()
+    def _advance(self, seconds: float) -> None:
+        """Move both clocks by a deterministic interval."""
+        self.now += seconds
+        self.monotonic += seconds
 
-    def test_manual_keeps_operation_lock(self) -> None:
-        cache = _make_cache()
-        cache._lock.acquire()
+    def _cached_reset(self, offset: float) -> None:
+        """Store a known reset without consuming the current manual floor."""
+        self.cache._usage = {'arbitrary_quota': {
+            'utilization': 99,
+            'resets_at': datetime.fromtimestamp(self.now + offset, timezone.utc).isoformat(),
+        }}
+        self.cache._last_success_time = 800.0
+
+    def test_manual_floor_before_and_at_boundary(self) -> None:
+        """Automatic success protects the endpoint until exactly 30 seconds after completion."""
+        self.cache.update()
+        self._advance(29.999)
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.assertEqual(self.cache.snapshot.manual_refresh_reason, 'cooldown')
+        self.assertEqual(self.cache.snapshot.manual_refresh_retry_at, 1030.0)
+        self._advance(0.001)
+        self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+
+    def test_manual_bypasses_long_cooldown_but_automatic_poll_retains_it(self) -> None:
+        """Only an explicit manual request can fetch inside the successful POLL_FAST floor."""
+        self.cache.update()
+        self._advance(30)
+        self.assertIsNone(self.cache.update().data)
+        self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+        self._advance(119.999)
+        self.assertIsNone(self.cache.update().data)
+        self._advance(0.001)
+        self.assertEqual(self.cache.update().data, _SUCCESS_DATA)
+
+    def test_failed_attempt_limits_repeat_clicks_and_retains_cached_data(self) -> None:
+        """Errors preserve the previous snapshot and still start the manual floor."""
+        self.cache._usage = _SUCCESS_DATA
+        self.cache._last_success_time = 800.0
+        self.fetch.return_value = pfr(_ERROR_DATA, None, True)
+        self.assertEqual(self.cache.update(manual=True).data, _ERROR_DATA)
+        self._advance(1)
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.assertEqual(self.cache.usage, _SUCCESS_DATA)
+        self.assertEqual(self.cache.last_success_time, 800.0)
+        self.assertEqual(self.cache.last_error, 'server down')
+        self.assertEqual(self.cache.consecutive_errors, 1)
+        self.assertTrue(self.cache._recovery_attempted)
+        self._advance(29)
+        self.assertEqual(self.cache.update(manual=True).data, _ERROR_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+        self.assertEqual(self.fetch.call_args.kwargs, {'allow_recovery': False})
+
+    def test_unexpected_failure_still_limits_manual_retries(self) -> None:
+        """An exception converted into a connection error also starts the floor."""
+        self.fetch.side_effect = RuntimeError('synthetic failure')
+        with patch('usage_monitor_for_claude.cache.log.exception'):
+            result = self.cache.update(manual=True)
+        assert result.data is not None
+        self.assertIn('error', result.data)
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.assertFalse(self.cache.refreshing)
+
+    def test_manual_floor_does_not_delay_automatic_error_retries(self) -> None:
+        """Automatic error cadence remains independent of the manual-only floor."""
+        self.fetch.return_value = pfr(_ERROR_DATA)
+        self.cache.update(manual=True)
+        self._advance(1)
+        self.assertEqual(self.cache.update().data, _ERROR_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+
+    def test_floor_starts_after_slow_operation_finishes(self) -> None:
+        """Time spent in provider operations does not consume the manual cooldown."""
+        def slow_fetch(*, allow_recovery: bool):
+            self._advance(20)
+            return pfr(_SUCCESS_DATA)
+
+        self.fetch.side_effect = slow_fetch
+        self.cache.update()
+        self.fetch.side_effect = None
+        self.fetch.return_value = pfr(_SUCCESS_DATA)
+        self._advance(29.999)
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.assertEqual(self.fetch.call_count, 1)
+        self._advance(0.001)
+        self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+
+    def test_wall_clock_corrections_do_not_shorten_the_manual_floor(self) -> None:
+        """Both forward and backward corrections leave the monotonic deadline intact."""
+        for correction in (-3600, 3600):
+            with self.subTest(correction=correction):
+                self.cache = _make_cache()
+                self.now = 10000.0
+                self.monotonic = 500.0
+                self.cache.update()
+                self.fetch.reset_mock()
+                self._advance(29)
+                self.now += correction
+                self.assertIsNone(self.cache.update(manual=True).data)
+                self.fetch.assert_not_called()
+                self.monotonic += 1
+                self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+
+    def test_active_backoff_takes_precedence_and_force_bypasses_it(self) -> None:
+        """Manual requests respect backoff while a confirmed switch can force a fetch."""
+        self.cache.update()
+        self.cache._rate_limit_until = 1300.0
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.assertEqual(self.cache.snapshot.manual_refresh_reason, 'backoff')
+        self.assertEqual(self.cache.snapshot.manual_refresh_retry_at, 1300.0)
+        self.assertEqual(self.fetch.call_count, 1)
+        self.assertEqual(self.cache.update(force=True, manual=True).data, _SUCCESS_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+
+    def test_imminent_reset_does_not_advance_success_and_delay_confirmation(self) -> None:
+        """A click at T-60 leaves the normal reset poll at T+5 eligible."""
+        self._cached_reset(60)
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.fetch.assert_not_called()
+        self.assertEqual(self.cache.last_success_time, 800.0)
+        self.assertEqual(self.cache.snapshot.manual_refresh_reason, 'reset')
+        self.assertEqual(self.cache.snapshot.manual_refresh_retry_at, 1065.0)
+        self._advance(65)
+        self.assertEqual(self.cache.update().data, _SUCCESS_DATA)
+        self.fetch.assert_called_once()
+
+    def test_reset_guard_boundaries(self) -> None:
+        """The protected window includes the propagation buffer, with exact outer edges allowed."""
+        for offset, withheld in ((120, False), (119.999, True), (0, True), (-4.999, True), (-5, False), (-100, False)):
+            with self.subTest(offset=offset):
+                self.cache = _make_cache()
+                self.fetch.reset_mock()
+                self._cached_reset(offset)
+                result = self.cache.update(manual=True)
+                self.assertEqual(result.data is None, withheld)
+                self.assertEqual(self.fetch.call_count, int(not withheld))
+
+    def test_cold_start_ignores_announced_reset(self) -> None:
+        """A first fetch is not withheld by reset metadata without a successful snapshot."""
+        self._cached_reset(1)
+        self.cache._last_success_time = None
+        self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+
+    def test_latest_error_does_not_erase_the_cached_reset_guard(self) -> None:
+        """Failed automatic attempts retain the reset schedule from the last successful data."""
+        self._cached_reset(180)
+        self.fetch.return_value = pfr(_ERROR_DATA)
+        self.cache.update()
+        self._advance(61)
+        self.fetch.reset_mock()
+        self.assertIsNone(self.cache.update(manual=True).data)
+        self.fetch.assert_not_called()
+        self.assertEqual(self.cache.snapshot.manual_refresh_reason, 'reset')
+
+    def test_reset_guard_is_rechecked_after_waiting_for_a_profile_operation(self) -> None:
+        """A reset that approaches while the operation lock is busy is still protected."""
+        self._cached_reset(150)
+        started, done = threading.Event(), threading.Event()
+        results = []
+
+        def manual_update():
+            started.set()
+            try:
+                results.append(self.cache.update(manual=True))
+            finally:
+                done.set()
+
+        self.cache._lock.acquire()
+        manual = threading.Thread(target=manual_update)
+        manual.start()
         try:
-            self.assertIsNone(cache.update(manual=True).data)
+            self.assertTrue(started.wait(5))
+            self.assertFalse(done.wait(0.1))
+            self._advance(31)
         finally:
-            cache._lock.release()
+            self.cache._lock.release()
+            manual.join(5)
+        self.assertFalse(manual.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].data)
+        self.fetch.assert_not_called()
+        self.assertEqual(self.cache.snapshot.manual_refresh_reason, 'reset')
+
+    def test_force_bypasses_reset_and_manual_floor(self) -> None:
+        """Confirmed account switches retain their narrowly scoped immediate fetch."""
+        self.cache.update()
+        self._cached_reset(60)
+        self.assertEqual(self.cache.update(force=True, manual=True).data, _SUCCESS_DATA)
+        self.assertEqual(self.fetch.call_count, 2)
+
+    def test_malformed_and_null_quota_entries_do_not_block_manual_fetch(self) -> None:
+        """Unknown fields are tolerated, and only usable zoned reset times impose deferral."""
+        invalid = (None, {}, [], 'quota', {'resets_at': None}, {'resets_at': ''}, {'resets_at': 'invalid'},
+                   {'resets_at': 1060}, {'resets_at': '1970-01-01T00:17:40'})
+        for entry in invalid:
+            with self.subTest(entry=entry):
+                self.cache = _make_cache()
+                self.cache._usage = {'arbitrary_quota': entry}
+                self.cache._last_success_time = 800.0
+                self.assertEqual(self.cache.update(manual=True).data, _SUCCESS_DATA)
+
+
+class TestManualRefreshCoalescing(unittest.TestCase):
+    """Manual callers join an existing operation while automatic calls stay nonblocking."""
+
+    def test_manual_waits_for_automatic_success_and_failure(self) -> None:
+        """An in-flight result completes the manual action without a duplicate provider call."""
+        for data in (_SUCCESS_DATA, _ERROR_DATA):
+            with self.subTest(data=data):
+                cache = _make_cache()
+                entered, release, started, done = (threading.Event() for _ in range(4))
+                results, errors = [], []
+
+                def fetch(*, allow_recovery: bool):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError('test did not release provider operation')
+                    return pfr(data)
+
+                def automatic_update():
+                    try:
+                        cache.update()
+                    except Exception as error:
+                        errors.append(error)
+
+                def manual_update():
+                    started.set()
+                    try:
+                        results.append(cache.update(manual=True))
+                    except Exception as error:
+                        errors.append(error)
+                    finally:
+                        done.set()
+
+                with patch('usage_monitor_for_claude.cache.fetch_provider_data', side_effect=fetch) as provider:
+                    automatic = threading.Thread(target=automatic_update)
+                    manual = threading.Thread(target=manual_update)
+                    automatic.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        manual.start()
+                        self.assertTrue(started.wait(5))
+                        self.assertFalse(done.wait(0.1))
+                    finally:
+                        release.set()
+                        automatic.join(5)
+                        if manual.ident is not None:
+                            manual.join(5)
+                    self.assertFalse(automatic.is_alive())
+                    self.assertFalse(manual.is_alive())
+                    self.assertEqual(errors, [])
+                    self.assertEqual(len(results), 1)
+                    self.assertIsNone(results[0].data)
+                    provider.assert_called_once()
+                    self.assertFalse(cache.refreshing)
+                    self.assertEqual(cache.last_error, data.get('error'))
+
+    def test_automatic_call_does_not_wait_for_manual_operation(self) -> None:
+        """Scheduled polling skips an active manual provider operation immediately."""
+        cache = _make_cache()
+        entered, release = threading.Event(), threading.Event()
+
+        def fetch(*, allow_recovery: bool):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('test did not release provider operation')
+            return pfr(_SUCCESS_DATA)
+
+        with patch('usage_monitor_for_claude.cache.fetch_provider_data', side_effect=fetch) as provider:
+            manual = threading.Thread(target=lambda: cache.update(manual=True))
+            manual.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertIsNone(cache.update().data)
+                self.assertTrue(cache.refreshing)
+            finally:
+                release.set()
+                manual.join(5)
+            self.assertFalse(manual.is_alive())
+            provider.assert_called_once()
 
 
 if __name__ == '__main__':

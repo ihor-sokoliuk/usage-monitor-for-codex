@@ -1,9 +1,11 @@
 """
 Popup JS Tests
-==============
+===============
 
-Behavior tests for popup.js DOM updates, executed with Node.js against a
-minimal DOM stub. The tests are skipped when Node.js is unavailable.
+Behavior tests for popup.js DOM update logic, executed with Node.js
+against a minimal DOM stub.  Skipped when Node.js is not installed -
+the app itself never needs Node; it is only used as a test runner
+for the popup's JavaScript.
 """
 from __future__ import annotations
 
@@ -15,8 +17,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 _POPUP_JS = Path(__file__).parent.parent / 'usage_monitor_for_claude' / 'popup' / 'popup.js'
+
 _NODE = shutil.which('node')
 
+# Minimal DOM stub covering exactly the APIs the bar create/update path uses.
 _DOM_STUB = r'''
 class StubElement {
     constructor(tag) {
@@ -32,9 +36,6 @@ class StubElement {
         this.parentNode = null;
         const element = this;
         this.classList = {
-            add(name) { const classes = element._classSet(); classes.add(name); element.className = [...classes].join(' '); },
-            remove(name) { const classes = element._classSet(); classes.delete(name); element.className = [...classes].join(' '); },
-            contains(name) { return element._classSet().has(name); },
             toggle(name, force) {
                 const classes = element._classSet();
                 const on = force === undefined ? !classes.has(name) : !!force;
@@ -42,6 +43,9 @@ class StubElement {
                 element.className = [...classes].join(' ');
                 return on;
             },
+            add(name) { const classes = element._classSet(); classes.add(name); element.className = [...classes].join(' '); },
+            remove(name) { const classes = element._classSet(); classes.delete(name); element.className = [...classes].join(' '); },
+            contains(name) { return element._classSet().has(name); },
         };
     }
     _classSet() { return new Set(this.className.split(/\s+/).filter(Boolean)); }
@@ -79,6 +83,7 @@ class StubElement {
 
 globalThis.document = {
     createElement: (tag) => new StubElement(tag),
+    getElementById: () => null,
     body: new StubElement('body'),
 };
 globalThis.ResizeObserver = class { constructor() {} observe() {} };
@@ -94,16 +99,33 @@ function makeEntry(overrides) {
         warn: false, dividers: [], marker_rel: null, reset_text: '',
     }, overrides);
 }
+
+// Full element set for the scenarios that drive updateData() end to end.
+function makeEls() {
+    const names = [
+        'accountSection', 'emailRow', 'emailValue', 'planRow', 'planValue',
+        'usageSection', 'headingUsage', 'usageBars',
+        'extraSection', 'extraSpent', 'extraPct', 'extraBarContainer', 'extraFill', 'extraBalance',
+        'installSection', 'installRows', 'statusSection', 'statusText',
+    ];
+    return Object.fromEntries(names.map((name) => [name, document.createElement('div')]));
+}
+
+function makeExtra(overrides) {
+    return Object.assign({
+        has_limit: true, pct_text: '25%', fill_pct: 0.25, spent_text: '$25.00 / $100.00 spent', balance_text: '',
+    }, overrides);
+}
 '''
 
 
 def _run_scenario(scenario: str) -> dict:
-    """Execute popup.js with the DOM stub and return its JSON result."""
+    """Execute the DOM stub + popup.js + scenario with Node and parse its JSON output."""
     script = _DOM_STUB + _POPUP_JS.read_text(encoding='utf-8') + _SCENARIO_PRELUDE + scenario
     with TemporaryDirectory() as tmp:
         script_path = Path(tmp) / 'scenario.js'
         script_path.write_text(script, encoding='utf-8')
-        proc = subprocess.run([_NODE, str(script_path)], capture_output=True, text=True, timeout=30)
+        proc = subprocess.run([_NODE, str(script_path)], capture_output=True, text=True, encoding='utf-8', timeout=30)
     if proc.returncode != 0:
         raise AssertionError(f'Node scenario failed:\n{proc.stderr}')
     return json.loads(proc.stdout)
@@ -111,9 +133,12 @@ def _run_scenario(scenario: str) -> dict:
 
 @unittest.skipUnless(_NODE, 'Node.js not available')
 class TestUsageBarUpdates(unittest.TestCase):
-    """Tests for updateUsageBars and updateBarElement."""
+    """Tests for updateUsageBars/updateBarElement in popup.js."""
 
     def test_changed_field_set_with_equal_count_updates_labels(self):
+        """When the set of quota fields changes but the count stays the same
+        (e.g. an account switch between plans), the bars must not show the new
+        percentages under the old labels."""
         result = _run_scenario('''
 updateUsageBars([
     makeEntry({ key: 'five_hour', label: '5h', pct_text: '10%' }),
@@ -134,6 +159,9 @@ console.log(JSON.stringify(els.usageBars.children.map((bar) => ({
         ])
 
     def test_marker_and_divider_positions_stable_across_update(self):
+        """The 2 px marker/divider elements are centered with a -1px correction
+        on create; an in-place update must use the identical expression, or the
+        elements shift by 1 px after the first data update."""
         result = _run_scenario('''
 const fields = { key: 'five_hour', label: '5h', marker_rel: 0.5, dividers: [0.25] };
 updateUsageBars([makeEntry(Object.assign({ pct_text: '10%' }, fields))]);
@@ -152,6 +180,7 @@ console.log(JSON.stringify({ before, after }));
         self.assertEqual(result['after'], result['before'])
 
     def test_unchanged_field_set_updates_in_place(self):
+        """With an unchanged field set, bars are updated in place (no rebuild)."""
         result = _run_scenario('''
 updateUsageBars([makeEntry({ key: 'five_hour', label: '5h', pct_text: '10%' })]);
 const barBefore = els.usageBars.children[0];
@@ -166,69 +195,216 @@ console.log(JSON.stringify({
 
 
 @unittest.skipUnless(_NODE, 'Node.js not available')
-class TestManualRefresh(unittest.TestCase):
-    """Tests for the popup refresh button's async request state."""
+class TestExtraUsageSection(unittest.TestCase):
+    """Tests for the prepaid balance line in the extra-usage section."""
 
-    def test_duplicate_click_suppressed_and_success_updates_immediately(self):
+    def test_balance_line_shown_when_present(self):
+        """A rendered balance is shown below the extra-usage bar."""
         result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: '$55.97 available' }), installations: [], status: null });
+console.log(JSON.stringify({ text: els.extraBalance.textContent, display: els.extraBalance.style.display }));
+''')
+        self.assertEqual(result, {'text': '$55.97 available', 'display': ''})
+
+    def test_balance_line_hidden_when_absent(self):
+        """Without a balance the line is hidden, leaving the section as it was before."""
+        result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra(), installations: [], status: null });
+const empty = { text: els.extraBalance.textContent, display: els.extraBalance.style.display };
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: undefined }), installations: [], status: null });
+const missing = { text: els.extraBalance.textContent, display: els.extraBalance.style.display };
+console.log(JSON.stringify({ empty, missing }));
+''')
+        self.assertEqual(result, {
+            'empty': {'text': '', 'display': 'none'},
+            'missing': {'text': '', 'display': 'none'},
+        })
+
+    def test_balance_line_cleared_on_update(self):
+        """A balance that becomes unavailable is removed instead of lingering."""
+        result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: '$55.97 available' }), installations: [], status: null });
+updateData({ profile: null, usage: [], extra: makeExtra(), installations: [], status: null });
+console.log(JSON.stringify({ text: els.extraBalance.textContent, display: els.extraBalance.style.display }));
+''')
+        self.assertEqual(result, {'text': '', 'display': 'none'})
+
+
+_REFRESH_PRELUDE = r'''
 const refreshBtn = document.createElement('button');
 document.getElementById = (id) => id === 'refreshBtn' ? refreshBtn : null;
-translations = { refresh: 'Refresh' };
+translations = {
+    refresh: 'Refresh', status_refreshing: 'Refreshing...',
+    refresh_deferred_reset: 'Refresh queued for after reset ({duration})',
+    refresh_cooldown: 'Refresh available in {duration}',
+    refresh_backoff: 'Rate limit: retry in {duration}',
+    duration_s: '{s}s', duration_m: '{m}m', duration_hm: '{h}h {m}m',
+    status_updated_s: 'Updated {s}s ago', status_updated: 'Updated {duration} ago',
+    status_next_update: 'Next update in {duration}',
+};
+let now = 1000;
+Date.now = () => now * 1000;
+globalThis.setInterval = () => 1;
+globalThis.clearInterval = () => {};
+els = makeEls();
+setupRefreshButton();
+'''
+
+
+@unittest.skipUnless(_NODE, 'Node.js not available')
+class TestManualRefresh(unittest.TestCase):
+    """Tests for the popup refresh command and cache-driven wait state."""
+
+    def test_duplicate_click_suppressed_and_result_does_not_replace_snapshot(self):
+        """The command result never competes with the pushed snapshot channel."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
 let resolveRefresh;
 let calls = 0;
-let updated = null;
 globalThis.pywebview = { api: { refresh: () => {
     calls += 1;
     return new Promise((resolve) => { resolveRefresh = resolve; });
 } } };
-updateData = (data) => { updated = data; };
-setupRefreshButton();
+const snapshot = { profile: null, usage: [makeEntry({ pct_text: '42%' })], installations: [], status: null };
+updateData(snapshot);
 refreshBtn.click();
 refreshBtn.click();
 const loading = refreshBtn.disabled && refreshBtn.classList.contains('refreshing');
-resolveRefresh({ status: { text: 'fresh' } });
+const newer = { ...snapshot, usage: [makeEntry({ pct_text: '43%' })] };
+updateData(newer);
+resolveRefresh({ status: { text: 'older response' } });
 setTimeout(() => console.log(JSON.stringify({
-    calls, loading, updated, disabled: refreshBtn.disabled,
-    refreshing: refreshBtn.classList.contains('refreshing'),
+    calls, loading, retainedNewest: lastData === newer,
+    pct: els.usageBars.children[0].querySelector('.bar-pct').textContent,
+    disabled: refreshBtn.disabled, refreshing: refreshBtn.classList.contains('refreshing'),
     title: refreshBtn.title, ariaLabel: refreshBtn['aria-label'],
 })), 0);
 ''')
         self.assertEqual(result, {
-            'calls': 1,
-            'loading': True,
-            'updated': {'status': {'text': 'fresh'}},
-            'disabled': False,
-            'refreshing': False,
-            'title': 'Refresh',
-            'ariaLabel': 'Refresh',
+            'calls': 1, 'loading': True, 'retainedNewest': True, 'pct': '43%',
+            'disabled': False, 'refreshing': False, 'title': 'Refresh', 'ariaLabel': 'Refresh',
         })
 
     def test_rejection_restores_button_without_replacing_data(self):
-        result = _run_scenario('''
-const refreshBtn = document.createElement('button');
-document.getElementById = (id) => id === 'refreshBtn' ? refreshBtn : null;
-translations = { refresh: 'Refresh' };
+        """A rejected bridge call removes only its own pending state."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
 let rejectRefresh;
-let updates = 0;
 globalThis.pywebview = { api: { refresh: () => new Promise((_resolve, reject) => { rejectRefresh = reject; }) } };
-updateData = () => { updates += 1; };
-setupRefreshButton();
+const snapshot = { profile: null, usage: [makeEntry({ pct_text: '42%' })], installations: [], status: null };
+updateData(snapshot);
 refreshBtn.click();
 const loading = refreshBtn.disabled && refreshBtn.classList.contains('refreshing');
 rejectRefresh(new Error('offline'));
 setTimeout(() => console.log(JSON.stringify({
-    loading, updates, disabled: refreshBtn.disabled,
+    loading, retained: lastData === snapshot, disabled: refreshBtn.disabled,
     refreshing: refreshBtn.classList.contains('refreshing'),
 })), 0);
 ''')
+        self.assertEqual(result, {'loading': True, 'retained': True, 'disabled': False, 'refreshing': False})
+
+    def test_synchronous_bridge_exception_cleans_loading_state(self):
+        """A bridge unavailable before it creates a promise also leaves the button usable."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
+globalThis.pywebview = { api: { refresh: () => { throw new Error('bridge unavailable'); } } };
+refreshBtn.click();
+console.log(JSON.stringify({ disabled: refreshBtn.disabled, refreshing: refreshBtn.classList.contains('refreshing') }));
+''')
+        self.assertEqual(result, {'disabled': False, 'refreshing': False})
+
+    def test_snapshot_refreshing_prevents_requests_and_survives_promise_completion(self):
+        """Tray or automatic loading remains active when the popup command completes."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
+let calls = 0;
+let resolveRefresh;
+globalThis.pywebview = { api: { refresh: () => {
+    calls += 1;
+    return new Promise((resolve) => { resolveRefresh = resolve; });
+} } };
+updateStatus({ text: 'Loading', refreshing: true });
+refreshBtn.click();
+const snapshotBlocked = calls === 0 && refreshBtn.disabled;
+updateStatus({ text: 'Ready', refreshing: false });
+refreshBtn.click();
+updateStatus({ text: 'Loading', refreshing: true });
+resolveRefresh();
+setTimeout(() => {
+    const stillLoading = refreshBtn.disabled && refreshBtn.classList.contains('refreshing');
+    updateStatus({ text: 'Ready', refreshing: false });
+    console.log(JSON.stringify({ snapshotBlocked, calls, stillLoading, disabled: refreshBtn.disabled }));
+}, 0);
+''')
+        self.assertEqual(result, {'snapshotBlocked': True, 'calls': 1, 'stillLoading': True, 'disabled': False})
+
+    def test_reset_deferral_countdown_without_usage(self):
+        """A queued reset refresh is visible even before the first successful fetch."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
+updateStatus({ text: 'Loading...', refreshing: false, manual_refresh_reason: 'reset', manual_refresh_retry_at: 1005 });
+const initial = {
+    disabled: refreshBtn.disabled, spinning: refreshBtn.classList.contains('refreshing'),
+    text: els.statusText.textContent, title: refreshBtn.title,
+};
+now = 1004;
+tickStatusText();
+const later = refreshBtn.title;
+now = 1005;
+tickStatusText();
+console.log(JSON.stringify({ initial, later, expiredDisabled: refreshBtn.disabled, expiredTitle: refreshBtn.title }));
+''')
         self.assertEqual(result, {
-            'loading': True,
-            'updates': 0,
-            'disabled': False,
-            'refreshing': False,
+            'initial': {
+                'disabled': True, 'spinning': False,
+                'text': 'Loading... \u00b7 Refresh queued for after reset (5s)',
+                'title': 'Refresh queued for after reset (5s)',
+            },
+            'later': 'Refresh queued for after reset (1s)', 'expiredDisabled': False, 'expiredTitle': 'Refresh',
         })
 
+    def test_cooldown_and_backoff_disable_requests_and_keep_cached_usage(self):
+        """Server backoff and the manual floor are localized, live countdowns."""
+        for reason, message in [('cooldown', 'Refresh available in 10s'), ('backoff', 'Rate limit: retry in 10s')]:
+            with self.subTest(reason=reason):
+                result = _run_scenario(_REFRESH_PRELUDE + f'''
+let calls = 0;
+globalThis.pywebview = {{ api: {{ refresh: async () => {{ calls += 1; }} }} }};
+const snapshot = {{
+    profile: null, usage: [makeEntry({{ pct_text: '42%' }})], installations: [],
+    status: {{ last_success_time: 990, next_poll_time: 1050, refreshing: false,
+        manual_refresh_reason: '{reason}', manual_refresh_retry_at: 1010 }},
+}};
+updateData(snapshot);
+refreshBtn.click();
+const blocked = calls === 0 && refreshBtn.disabled;
+const title = refreshBtn.title;
+const text = els.statusText.textContent;
+now = 1010;
+tickStatusText();
+const available = !refreshBtn.disabled;
+console.log(JSON.stringify({{
+    blocked, title, text, available, retained: lastData === snapshot,
+    pct: els.usageBars.children[0].querySelector('.bar-pct').textContent,
+}}));
+''')
+                self.assertEqual(result, {
+                    'blocked': True, 'title': message, 'text': f'Updated 10s ago \u00b7 {message}',
+                    'available': True, 'retained': True, 'pct': '42%',
+                })
 
+    def test_error_status_still_shows_refresh_backoff(self):
+        """An empty failed cache retains its error alongside the refresh delay."""
+        result = _run_scenario(_REFRESH_PRELUDE + '''
+updateStatus({ text: 'Rate limited', is_error: true, refreshing: false,
+    manual_refresh_reason: 'backoff', manual_refresh_retry_at: 1008 });
+console.log(JSON.stringify({
+    text: els.statusText.textContent, title: els.statusText.title,
+    error: els.statusSection.classList.contains('error'), disabled: refreshBtn.disabled,
+}));
+''')
+        self.assertEqual(result, {
+            'text': 'Rate limited \u00b7 Rate limit: retry in 8s',
+            'title': 'Rate limited \u00b7 Rate limit: retry in 8s', 'error': True, 'disabled': True,
+        })
 
 
 if __name__ == '__main__':

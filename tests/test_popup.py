@@ -7,22 +7,22 @@ and _init_config.
 """
 from __future__ import annotations
 
-import ctypes
+import sys
 import threading
 import time
 import unittest
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude.cache import CacheSnapshot
 from usage_monitor_for_claude.popup import (
-    UsagePopup, _BASELINE_DPI, _MONITORINFO, _SWP_NOACTIVATE, _SWP_NOSIZE, _SWP_NOZORDER,
-    _init_config, _snapshot_to_dict, _usage_entries,
+    PopupWindowCache, UsagePopup, _init_config, _snapshot_to_dict, _usage_entries, new_window_cache,
 )
 
 
 def _snap(
     usage=None, profile=None, last_success_time=None,
-    refreshing=False, last_error=None, version=1,
+    refreshing=False, last_error=None, version=1, manual_refresh_reason=None, manual_refresh_retry_at=None,
 ) -> CacheSnapshot:
     """Build a CacheSnapshot with convenient defaults."""
     return CacheSnapshot(
@@ -32,6 +32,8 @@ def _snap(
         refreshing=refreshing,
         last_error=last_error,
         version=version,
+        manual_refresh_reason=manual_refresh_reason,
+        manual_refresh_retry_at=manual_refresh_retry_at,
     )
 
 
@@ -63,17 +65,6 @@ class TestUsageEntries(unittest.TestCase):
         entries = _usage_entries(usage)
         labels = [e[0] for e in entries]
         self.assertEqual(labels, [popup_label('five_hour'), popup_label('seven_day')])
-
-    def test_provider_limit_name_replaces_internal_bucket_name(self):
-        usage = {
-            'seven_day_codex_bengalfox': {
-                'utilization': 0,
-                'resets_at': '2026-01-07T00:00:00Z',
-                'limit_name': 'gpt-5.2-codex-sonic',
-            },
-        }
-        entries = _usage_entries(usage)
-        self.assertEqual(entries[0][0], 'Weekly (GPT-5.2-Codex-Sonic)')
 
     def test_periods_derived_from_field_name(self):
         """Period is derived from the field name via field_period."""
@@ -199,7 +190,7 @@ class TestSnapshotToDict(unittest.TestCase):
         self.assertEqual(result['profile']['plan'], '')
 
     def test_profile_with_null_account_and_organization(self):
-        """A profile carrying null account fields must not crash the popup."""
+        """A profile carrying account/organization as null must not crash the popup."""
         result = _snapshot_to_dict(_snap(profile={'account': None, 'organization': None}), installations=[])
         self.assertEqual(result['profile']['email'], '')
         self.assertEqual(result['profile']['plan'], '')
@@ -355,6 +346,22 @@ class TestSnapshotToDict(unittest.TestCase):
         keys = [bar['key'] for bar in result['usage']]
         self.assertEqual(keys, ['five_hour', 'seven_day_opus'])
 
+    @patch('usage_monitor_for_claude.popup.POPUP_FIELDS', ['*', '-iguana_necktie'])
+    @patch('usage_monitor_for_claude.popup.elapsed_pct', return_value=None)
+    @patch('usage_monitor_for_claude.popup.time_until', return_value='')
+    @patch('usage_monitor_for_claude.popup.divider_positions', return_value=[])
+    def test_excluded_active_code_named_quota_not_rendered(self, _mock_div, _mock_tu, _mock_ep):
+        """The wildcard keeps other and newly introduced quotas after one is hidden."""
+        usage = {
+            'iguana_necktie': {'utilization': 40, 'resets_at': '2026-01-01T05:00:00Z'},
+            'nimbus_quill': {'utilization': 30, 'resets_at': '2026-01-01T05:00:00Z'},
+            'seven_day_fable': {'utilization': 20, 'resets_at': None},
+            'five_hour': {'utilization': 10, 'resets_at': '2026-01-01T05:00:00Z'},
+        }
+        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
+        self.assertEqual([bar['key'] for bar in result['usage']], ['five_hour', 'seven_day_fable', 'nimbus_quill'])
+        self.assertEqual([bar['pct_text'] for bar in result['usage']], ['10%', '20%', '30%'])
+
     @patch('usage_monitor_for_claude.popup.POPUP_FIELDS', ['typo_field', 'seven_day'])
     @patch('usage_monitor_for_claude.popup.elapsed_pct', return_value=None)
     @patch('usage_monitor_for_claude.popup.time_until', return_value='')
@@ -389,44 +396,10 @@ class TestSnapshotToDict(unittest.TestCase):
         self.assertEqual(len(result['usage']), 1)
         self.assertEqual(result['usage'][0]['pct_text'], '42%')
 
-    # -- extra usage --
-
     def test_no_extra_usage(self):
-        """Extra is None when no extra_usage key in usage dict."""
+        """The Codex popup does not expose a billing capability."""
         result = _snapshot_to_dict(_snap(), installations=[])
         self.assertIsNone(result['extra'])
-
-    def test_extra_usage_disabled(self):
-        """Extra is None when extra usage is not enabled."""
-        usage = {'extra_usage': {'is_enabled': False, 'monthly_limit': 1000, 'used_credits': 500}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertIsNone(result['extra'])
-
-    def test_extra_usage_zero_limit(self):
-        """Extra is None when monthly limit is zero."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 0, 'used_credits': 0}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertIsNone(result['extra'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_calculation(self, _mock_credits):
-        """Extra usage computes percentage and formatted text correctly."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 10000, 'used_credits': 2500}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-
-        extra = result['extra']
-        self.assertIsNotNone(extra)
-        self.assertEqual(extra['pct_text'], '25%')
-        self.assertAlmostEqual(extra['fill_pct'], 0.25)
-        self.assertIn('$25.00', extra['spent_text'])
-        self.assertIn('$100.00', extra['spent_text'])
-
-    @patch('usage_monitor_for_claude.popup.format_credits', side_effect=lambda c, *_: f'${c / 100:.2f}')
-    def test_extra_usage_fill_clamped(self, _mock_credits):
-        """Extra usage fill is clamped to 1.0 when over limit."""
-        usage = {'extra_usage': {'is_enabled': True, 'monthly_limit': 1000, 'used_credits': 2000}}
-        result = _snapshot_to_dict(_snap(usage=usage), installations=[])
-        self.assertEqual(result['extra']['fill_pct'], 1.0)
 
     # -- installations --
 
@@ -480,7 +453,7 @@ class TestSnapshotToDict(unittest.TestCase):
             _snap(usage=usage, last_success_time=1000.0, refreshing=True, last_error='Server down'),
             installations=[], next_poll_time=1180.0,
         )
-        self.assertEqual(set(result['status'].keys()), {'last_success_time', 'next_poll_time', 'refreshing', 'error'})
+        self.assertEqual(set(result['status'].keys()), {'last_success_time', 'next_poll_time', 'refreshing', 'error', 'manual_refresh_reason', 'manual_refresh_retry_at'})
 
     @patch('usage_monitor_for_claude.popup.elapsed_pct', return_value=None)
     @patch('usage_monitor_for_claude.popup.time_until', return_value='')
@@ -494,6 +467,26 @@ class TestSnapshotToDict(unittest.TestCase):
             installations=[],
         )
         self.assertEqual(len(result['status']['error']), 120)
+
+    def test_refresh_wait_state_preserved_without_usage(self):
+        """Empty and failed caches still tell the popup when refresh is available."""
+        for reason, error in [('reset', None), ('cooldown', 'Connection failed'), ('backoff', 'Rate limited')]:
+            with self.subTest(reason=reason):
+                result = _snapshot_to_dict(_snap(
+                    last_error=error, manual_refresh_reason=reason, manual_refresh_retry_at=1234.0,
+                ), installations=[])
+                self.assertEqual(result['status']['manual_refresh_reason'], reason)
+                self.assertEqual(result['status']['manual_refresh_retry_at'], 1234.0)
+                self.assertFalse(result['status']['refreshing'])
+
+    def test_refresh_wait_state_preserved_with_usage(self):
+        """Cached values retain their refresh delay without becoming a loading state."""
+        result = _snapshot_to_dict(_snap(
+            usage={'five_hour': {'utilization': 42}}, manual_refresh_reason='reset', manual_refresh_retry_at=1234.0,
+        ), installations=[])
+        self.assertEqual(result['status']['manual_refresh_reason'], 'reset')
+        self.assertEqual(result['status']['manual_refresh_retry_at'], 1234.0)
+        self.assertFalse(result['status']['refreshing'])
 
     # -- top-level dict structure --
 
@@ -581,131 +574,28 @@ class TestInitConfig(unittest.TestCase):
 # Pin state
 # ---------------------------------------------------------------------------
 
-class TestPinState(unittest.TestCase):
-    """Tests for UsagePopup pin state."""
-
-    def test_set_pinned_updates_state(self):
-        popup = object.__new__(UsagePopup)
-        popup._pinned = False
-
-        self.assertTrue(popup._set_pinned(True))
-        self.assertTrue(popup._pinned)
-
-        popup._moved_while_pinned = True
-        self.assertFalse(popup._set_pinned(False))
-        self.assertFalse(popup._pinned)
-        self.assertFalse(popup._moved_while_pinned)
-
-    def test_begin_drag_ignored_when_unpinned(self):
-        popup = object.__new__(UsagePopup)
-        popup._pinned = False
-        popup._popup_hwnd = 12345
-        popup._dragging = False
-
-        self.assertFalse(popup._begin_drag())
-        self.assertFalse(popup._dragging)
-
-    def test_begin_drag_anchors_physical_cursor_offset(self):
-        popup = object.__new__(UsagePopup)
-        popup._pinned = True
-        popup._popup_hwnd = 12345
-        popup._dragging = False
-
-        def fill_cursor(ptr):
-            point = ctypes.cast(ptr, ctypes.POINTER(ctypes.wintypes.POINT)).contents
-            point.x = 500
-            point.y = 400
-
-        def fill_rect(_hwnd, ptr):
-            rect = ctypes.cast(ptr, ctypes.POINTER(ctypes.wintypes.RECT)).contents
-            rect.left = 460
-            rect.top = 360
-
-        with patch('ctypes.windll.user32.GetCursorPos', side_effect=fill_cursor), \
-             patch('ctypes.windll.user32.GetWindowRect', side_effect=fill_rect), \
-             patch('ctypes.windll.user32.GetDpiForWindow', return_value=96):
-            self.assertTrue(popup._begin_drag())
-
-        self.assertTrue(popup._dragging)
-        self.assertEqual(popup._drag_offset, (40, 40))
-        self.assertEqual(popup._drag_start_dpi, 96)
-
-    def test_drag_ignored_when_not_dragging(self):
-        popup = object.__new__(UsagePopup)
-        popup._pinned = True
-        popup._dragging = False
-        popup._popup_hwnd = 12345
-
-        with patch('ctypes.windll.user32.SetWindowPos') as mock_set_pos:
-            self.assertFalse(popup._drag())
-        mock_set_pos.assert_not_called()
-
-    def test_drag_moves_popup_to_physical_cursor(self):
-        popup = object.__new__(UsagePopup)
-        popup._pinned = True
-        popup._dragging = True
-        popup._popup_hwnd = 12345
-        popup._drag_offset = (40, 40)
-        popup._moved_while_pinned = False
-
-        def fill_cursor(ptr):
-            point = ctypes.cast(ptr, ctypes.POINTER(ctypes.wintypes.POINT)).contents
-            point.x = 700
-            point.y = 620
-
-        with patch('ctypes.windll.user32.GetCursorPos', side_effect=fill_cursor), \
-             patch('ctypes.windll.user32.SetWindowPos') as mock_set_pos:
-            self.assertTrue(popup._drag())
-
-        mock_set_pos.assert_called_once_with(
-            12345, 0, 660, 580, 0, 0, _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE,
-        )
-        self.assertTrue(popup._moved_while_pinned)
-
-    def test_end_drag_reasserts_size_on_dpi_change(self):
-        popup = object.__new__(UsagePopup)
-        popup.WIDTH = UsagePopup.WIDTH
-        popup._popup_hwnd = 12345
-        popup._dragging = True
-        popup._drag_start_dpi = 96
-        popup._last_height = 500
-        popup._geometry_lock = threading.Lock()
-        popup._window = MagicMock()
-
-        with patch('ctypes.windll.user32.GetDpiForWindow', return_value=144):
-            popup._end_drag()
-
-        self.assertFalse(popup._dragging)
-        popup._window.resize.assert_called_once_with(UsagePopup.WIDTH, 500)
-
-    def test_end_drag_keeps_size_without_dpi_change(self):
-        popup = object.__new__(UsagePopup)
-        popup.WIDTH = UsagePopup.WIDTH
-        popup._popup_hwnd = 12345
-        popup._dragging = True
-        popup._drag_start_dpi = 96
-        popup._last_height = 500
-        popup._window = MagicMock()
-
-        with patch('ctypes.windll.user32.GetDpiForWindow', return_value=96):
-            popup._end_drag()
-
-        self.assertFalse(popup._dragging)
-        popup._window.resize.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
-# report_height / first show
+# Height reporting and reveal
 # ---------------------------------------------------------------------------
 
 class TestReportHeight(unittest.TestCase):
-    """Tests for serialized popup sizing and first-show behavior."""
+    """Tests for _PopupApi.report_height - the first report must always reveal the window."""
 
     def _build_popup(self):
+        """Run the real UsagePopup.__init__ with webview and the host mocked.
+
+        __init__ blocks on _closed.wait(), so it runs on a worker thread; the
+        _PopupApi instance is captured from the js_api argument passed to
+        webview.create_window.
+        """
         patcher_watch = patch.object(UsagePopup, '_dismiss_watch', lambda self: None)
         patcher_webview = patch('usage_monitor_for_claude.popup.webview')
+        patcher_host = patch('usage_monitor_for_claude.popup.PopupHost')
         patcher_watch.start()
         mock_webview = patcher_webview.start()
+        patcher_host.start()
+        self.addCleanup(patcher_host.stop)
         self.addCleanup(patcher_webview.stop)
         self.addCleanup(patcher_watch.stop)
 
@@ -721,93 +611,284 @@ class TestReportHeight(unittest.TestCase):
         api = mock_webview.create_window.call_args.kwargs['js_api']
         popup = api._popup
         self.addCleanup(popup._closed.set)
-        popup._resize_and_position = MagicMock()
-        popup._show_window = MagicMock()
+
         return popup, api
 
-    def test_first_report_at_initial_window_height_shows_popup(self):
+    def test_first_report_at_initial_window_height_reveals_popup(self):
+        """A first content height equal to the initial window height must still reveal the window."""
         popup, api = self._build_popup()
 
-        api.report_height(400)
+        api.report_height(UsagePopup._INITIAL_HEIGHT)
 
-        popup._resize_and_position.assert_called_once_with(400)
-        popup._show_window.assert_called_once()
+        popup._host.apply_geometry.assert_called_once_with(UsagePopup._INITIAL_HEIGHT, keep_position=False)
+        popup._host.reveal.assert_called_once()
 
-    def test_zero_height_ignored(self):
+    def test_first_report_at_other_height_reveals_popup(self):
+        """A first content height different from the window height reveals the window."""
+        popup, api = self._build_popup()
+
+        api.report_height(523)
+
+        popup._host.apply_geometry.assert_called_once_with(523, keep_position=False)
+        popup._host.reveal.assert_called_once()
+
+    def test_repeated_height_is_ignored(self):
+        """An unchanged height must not resize or reveal again."""
+        popup, api = self._build_popup()
+
+        api.report_height(523)
+        api.report_height(523)
+
+        popup._host.apply_geometry.assert_called_once()
+        popup._host.reveal.assert_called_once()
+
+    def test_changed_height_resizes_without_revealing_again(self):
+        """A later height change resizes but does not restart the reveal path."""
+        popup, api = self._build_popup()
+
+        api.report_height(523)
+        api.report_height(610)
+
+        self.assertEqual(popup._host.apply_geometry.call_count, 2)
+        popup._host.reveal.assert_called_once()
+
+    def test_zero_height_is_ignored(self):
+        """A zero height carries no layout information."""
         popup, api = self._build_popup()
 
         api.report_height(0)
 
-        popup._resize_and_position.assert_not_called()
-        popup._show_window.assert_not_called()
+        popup._host.apply_geometry.assert_not_called()
+        popup._host.reveal.assert_not_called()
 
-    def test_stale_height_report_cannot_overwrite_newer_resize(self):
+    def test_moved_pinned_popup_keeps_its_position(self):
+        """A pinned popup the user dragged must not snap back to the tray."""
         popup, api = self._build_popup()
-        first_entered = threading.Event()
-        release_first = threading.Event()
-        applied = []
+        api.report_height(400)
+        popup._pinned = True
+        popup._moved_while_pinned = True
 
-        def resize(height):
-            if height == 400:
-                first_entered.set()
-                release_first.wait(2)
-            applied.append(height)
+        api.report_height(500)
 
-        popup._resize_and_position = MagicMock(side_effect=resize)
-        first = threading.Thread(target=lambda: api.report_height(400), daemon=True)
-        first.start()
-        self.assertTrue(first_entered.wait(2))
-        second = threading.Thread(target=lambda: api.report_height(523), daemon=True)
-        second.start()
-        time.sleep(0.1)
-        release_first.set()
-        first.join(2)
-        second.join(2)
+        self.assertTrue(popup._host.apply_geometry.call_args.kwargs['keep_position'])
 
-        self.assertEqual(applied[-1], popup._last_height)
+    def test_pinned_popup_that_was_not_moved_still_anchors(self):
+        """Pinning alone does not detach the popup from the tray anchor."""
+        popup, api = self._build_popup()
+        api.report_height(400)
+        popup._pinned = True
+
+        api.report_height(500)
+
+        self.assertFalse(popup._host.apply_geometry.call_args.kwargs['keep_position'])
 
 
 # ---------------------------------------------------------------------------
-# Dismiss-watch shutdown and update resilience
+# Dismiss-watch shutdown
 # ---------------------------------------------------------------------------
 
 class TestDismissWatchShutdown(unittest.TestCase):
-    """Closing the popup must wake and terminate its Win32 message pump."""
+    """Tests that closing the popup terminates the platform host's dismiss watch.
 
-    def _start_pump(self, pinned):
+    The Windows host installs system-wide input hooks and only removes them
+    when its message pump exits.  Closing the window must wake the watch in
+    every state - especially while pinned, where the user-dismissal path
+    never fires.
+    """
+
+    def _start_watch(self, pinned):
+        """Build a minimal popup whose host blocks until stop_watch() is called."""
+        released = threading.Event()
+
+        host = MagicMock()
+        host.watch_dismiss.side_effect = lambda should_dismiss, is_running: released.wait(2)
+        host.stop_watch.side_effect = released.set
+
         popup = object.__new__(UsagePopup)
         popup._running = True
+        popup._close_started = False
         popup._pinned = pinned
         popup._shown = True
-        popup._popup_hwnd = 0
-        popup._pump_tid = 0
         popup._closed = threading.Event()
         popup._window = MagicMock()
+        popup._window_cache = None
+        popup._host = host
 
         thread = threading.Thread(target=popup._dismiss_watch, daemon=True)
         thread.start()
+
         deadline = time.time() + 1.0
-        while not popup._pump_tid and time.time() < deadline:
+        while not host.watch_dismiss.called and time.time() < deadline:
             time.sleep(0.01)
+
         return popup, thread
 
-    def test_close_while_pinned_exits_pump(self):
-        popup, thread = self._start_pump(pinned=True)
+    def test_close_while_pinned_ends_watch(self):
+        """_close() on a pinned popup must end the watch so hooks are removed."""
+        popup, thread = self._start_watch(pinned=True)
         popup._close()
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
 
-    def test_window_closed_event_exits_pump(self):
-        popup, thread = self._start_pump(pinned=True)
+    def test_close_while_unpinned_ends_watch(self):
+        """_close() must end the watch immediately, not on the next outside click."""
+        popup, thread = self._start_watch(pinned=False)
+        popup._close()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+    def test_window_closed_event_ends_watch(self):
+        """The pywebview closed event must end the watch even while pinned."""
+        popup, thread = self._start_watch(pinned=True)
         popup._on_window_closed()
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
 
+    def test_watch_return_closes_the_popup(self):
+        """When the host reports a dismissal, the popup closes itself."""
+        popup, thread = self._start_watch(pinned=False)
+        popup._host.stop_watch()
+        thread.join(timeout=2)
+        self.assertTrue(popup._closed.is_set())
+
+
+class TestShouldDismiss(unittest.TestCase):
+    """Tests for the predicate the platform host asks before dismissing."""
+
+    def _popup(self, shown, pinned):
+        popup = object.__new__(UsagePopup)
+        popup._shown = shown
+        popup._pinned = pinned
+        return popup
+
+    def test_shown_and_unpinned_dismisses(self):
+        self.assertTrue(self._popup(shown=True, pinned=False)._should_dismiss())
+
+    def test_pinned_does_not_dismiss(self):
+        """A pinned popup stays open until the user unpins or closes it."""
+        self.assertFalse(self._popup(shown=True, pinned=True)._should_dismiss())
+
+    def test_not_yet_shown_does_not_dismiss(self):
+        """A window still being measured must not be closed by a stray event."""
+        self.assertFalse(self._popup(shown=False, pinned=False)._should_dismiss())
+
+
+# ---------------------------------------------------------------------------
+# Pin state
+# ---------------------------------------------------------------------------
+
+class TestPinState(unittest.TestCase):
+    """Tests for pinning and the drag it enables."""
+
+    def _popup(self, pinned=False):
+        popup = object.__new__(UsagePopup)
+        popup._pinned = pinned
+        popup._moved_while_pinned = False
+        popup._last_height = 500
+        popup._geometry_lock = threading.Lock()
+        popup._host = MagicMock()
+        return popup
+
+    def test_set_pinned_reports_what_was_applied(self):
+        """popup.js assigns the result back to its own state."""
+        popup = self._popup()
+        self.assertTrue(popup._set_pinned(True))
+        self.assertFalse(popup._set_pinned(False))
+
+    def test_unpinning_clears_the_moved_flag(self):
+        """After unpinning, the popup anchors to the tray again."""
+        popup = self._popup(pinned=True)
+        popup._moved_while_pinned = True
+        popup._set_pinned(False)
+        self.assertFalse(popup._moved_while_pinned)
+
+    def test_drag_requires_pinning(self):
+        """An unpinned popup is positioned by the app, not the user."""
+        popup = self._popup(pinned=False)
+        self.assertFalse(popup._begin_drag())
+        self.assertFalse(popup._drag())
+        popup._host.begin_drag.assert_not_called()
+
+    def test_begin_drag_delegates_to_host(self):
+        popup = self._popup(pinned=True)
+        popup._host.begin_drag.return_value = True
+        self.assertTrue(popup._begin_drag())
+
+    def test_drag_marks_the_popup_as_moved(self):
+        """A successful drag detaches the popup from the tray anchor."""
+        popup = self._popup(pinned=True)
+        popup._host.drag.return_value = True
+        self.assertTrue(popup._drag())
+        self.assertTrue(popup._moved_while_pinned)
+
+    def test_refused_drag_does_not_mark_as_moved(self):
+        """A drag the host refused must not detach the anchor."""
+        popup = self._popup(pinned=True)
+        popup._host.drag.return_value = False
+        self.assertFalse(popup._drag())
+        self.assertFalse(popup._moved_while_pinned)
+
+    def test_end_drag_passes_the_current_height(self):
+        """The host may need the height to re-assert the size after the drag."""
+        popup = self._popup(pinned=True)
+        popup._end_drag()
+        popup._host.end_drag.assert_called_once_with(500)
+
+
+# ---------------------------------------------------------------------------
+# _update_loop resilience
+# ---------------------------------------------------------------------------
 
 class TestUpdateLoopResilience(unittest.TestCase):
-    """Transient WebView failures must not permanently stop popup updates."""
+    """Tests that a transient failure does not end the popup's update stream."""
+
+    def test_transient_failure_does_not_end_update_loop(self):
+        """One failing evaluate_js (or snapshot conversion) must not stop updates -
+        a pinned popup can live for days and would show stale bars forever."""
+        popup = object.__new__(UsagePopup)
+        popup._running = True
+        popup._last_version = 0
+        popup._window = MagicMock()
+
+        class FakeCache:
+            def __init__(self):
+                self.version_counter = 0
+
+            @property
+            def snapshot(self):
+                self.version_counter += 1
+                snap = MagicMock()
+                snap.version = self.version_counter
+                return snap
+
+        popup.app = MagicMock()
+        popup.app.cache = FakeCache()
+        popup.app._next_poll_time = 100.0
+
+        def eval_js(_script):
+            if popup._window.evaluate_js.call_count == 1:
+                raise RuntimeError('transient WebView2 hiccup')
+            popup._running = False
+
+        popup._window.evaluate_js.side_effect = eval_js
+
+        iterations = [0]
+
+        def guarded_sleep(_seconds):
+            iterations[0] += 1
+            if iterations[0] > 10:
+                popup._running = False
+
+        with patch('usage_monitor_for_claude.popup.time.sleep', side_effect=guarded_sleep), \
+             patch('usage_monitor_for_claude.popup.find_installations', return_value=[]), \
+             patch('usage_monitor_for_claude.popup._snapshot_to_dict', return_value={}):
+            popup._update_loop()
+
+        self.assertEqual(popup._window.evaluate_js.call_count, 2)
 
     def test_failed_update_is_retried_on_next_tick(self):
+        """An update that failed to push is retried even when the data did not
+        change again - the version marker advances only on success."""
         popup = object.__new__(UsagePopup)
         popup._running = True
         popup._last_version = 0
@@ -825,6 +906,7 @@ class TestUpdateLoopResilience(unittest.TestCase):
             popup._running = False
 
         popup._window.evaluate_js.side_effect = eval_js
+
         iterations = [0]
 
         def guarded_sleep(_seconds):
@@ -841,245 +923,330 @@ class TestUpdateLoopResilience(unittest.TestCase):
         self.assertEqual(popup._last_version, 1)
 
 
+    def test_time_only_refresh_transitions_are_pushed_without_installation_scan(self):
+        """Clock-driven reset and backoff changes do not need a cache version bump."""
+        initial = _snap(version=7)
+        states = [
+            initial,
+            replace(initial, manual_refresh_reason='reset', manual_refresh_retry_at=2000.0),
+            replace(initial, manual_refresh_reason='backoff', manual_refresh_retry_at=2020.0),
+            replace(initial, manual_refresh_reason='cooldown', manual_refresh_retry_at=2030.0001),
+            replace(initial, manual_refresh_reason='cooldown', manual_refresh_retry_at=2030.0002),
+            initial,
+        ]
+        popup = object.__new__(UsagePopup)
+        popup._running = True
+        popup._last_version = initial.version
+        popup._window = MagicMock()
+        popup.app = MagicMock()
+        popup.app._next_poll_time = 2100.0
+        state_index = -1
+
+        def advance_clock(_seconds):
+            nonlocal state_index
+            state_index += 1
+            if state_index == len(states):
+                popup._running = False
+                return
+            popup.app.cache.snapshot = states[state_index]
+
+        with patch('usage_monitor_for_claude.popup.time.sleep', side_effect=advance_clock), \
+             patch('usage_monitor_for_claude.popup.find_installations', return_value=[]) as find, \
+             patch('usage_monitor_for_claude.popup._snapshot_to_dict', return_value={}) as serialize:
+            popup._update_loop()
+
+        self.assertEqual(popup._window.evaluate_js.call_count, 5)
+        self.assertEqual([call.args[0] for call in serialize.call_args_list], [states[index] for index in (0, 1, 2, 3, 5)])
+        find.assert_called_once_with()
+
+
 # ---------------------------------------------------------------------------
-# _tray_position
+# Window reuse
 # ---------------------------------------------------------------------------
 
-class TestTrayPosition(unittest.TestCase):
-    """Tests for UsagePopup._tray_position - popup placement near the tray.
+class _FakeEvent:
+    """Stands in for a pywebview event: ``+=`` registers a handler, fire() delivers."""
 
-    _tray_position receives a physical-pixel height (the actual window
-    height after DPI scaling) and work-area bounds in physical pixels.
-    It returns logical coordinates suitable for pywebview's move().
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def fire(self):
+        for handler in list(self.handlers):
+            handler()
+
+
+def _fake_window():
+    window = MagicMock()
+    window.events.loaded = _FakeEvent()
+    window.events.closed = _FakeEvent()
+
+    return window
+
+
+class TestPopupWindowCache(unittest.TestCase):
+    """Tests for keeping one popup window alive between openings.
+
+    On GTK every destroyed window leaves its WebKit processes behind, so the
+    cache must create the window once and only hide and reload it afterwards.
     """
 
-    def _call(self, work_left, work_top, work_right, work_bottom, dpi, physical_width, physical_height,
-              mon_left=0, mon_top=0):
-        """Call _tray_position without constructing a full UsagePopup."""
-        popup = object.__new__(UsagePopup)
-        popup._popup_hwnd = 12345
+    def setUp(self):
+        self.windows = []
 
-        def fill_mon_info(_hmon, ptr):
-            info = ctypes.cast(ptr, ctypes.POINTER(_MONITORINFO)).contents
-            info.cbSize = ctypes.sizeof(_MONITORINFO)
-            info.rcMonitor.left = mon_left
-            info.rcMonitor.top = mon_top
-            info.rcMonitor.right = work_right
-            info.rcMonitor.bottom = work_bottom
-            info.rcWork.left = work_left
-            info.rcWork.top = work_top
-            info.rcWork.right = work_right
-            info.rcWork.bottom = work_bottom
+        def create_window(*_args, **_kwargs):
+            window = _fake_window()
+            self.windows.append(window)
 
-        with patch('ctypes.windll.user32.FindWindowW', return_value=99999), \
-             patch('ctypes.windll.user32.MonitorFromWindow', return_value=11111), \
-             patch('ctypes.windll.user32.GetMonitorInfoW', side_effect=fill_mon_info), \
-             patch('ctypes.windll.user32.GetDpiForWindow', return_value=dpi):
-            return popup._tray_position(physical_width, physical_height)
+            return window
 
-    def test_bottom_right_at_100_percent_scaling(self):
-        """At 100% DPI, popup aligns to bottom-right of work area."""
-        x, y = self._call(0, 0, 1920, 1040, _BASELINE_DPI, 340, 400)
-        self.assertEqual(x, 1920 - 340 - 12)
-        self.assertEqual(y, 1040 - 400 - 12)
+        for target in ('webview', 'PopupHost'):
+            patcher = patch(f'usage_monitor_for_claude.popup.{target}')
+            mock = patcher.start()
+            self.addCleanup(patcher.stop)
+            setattr(self, target, mock)
 
-    def test_bottom_right_at_125_percent_scaling(self):
-        """At 125% DPI, logical coordinates place the popup within the work area."""
-        scale = 120 / _BASELINE_DPI  # 1.25
-        pw = int(340 * scale)
-        ph = int(400 * scale)
-        x, y = self._call(0, 0, 2400, 1300, 120, pw, ph)
-        expected_x = int((2400 - pw - 12) / scale)
-        expected_y = int((1300 - ph - 12) / scale)
-        self.assertEqual(x, expected_x)
-        self.assertEqual(y, expected_y)
+        self.webview.create_window.side_effect = create_window
+        self.host = self.PopupHost.return_value
+        self.cache = PopupWindowCache()
 
-    def test_bottom_right_at_150_percent_scaling(self):
-        """At 150% DPI, logical coordinates place the popup within the work area."""
-        scale = 144 / _BASELINE_DPI  # 1.5
-        pw = int(340 * scale)
-        ph = int(400 * scale)
-        x, y = self._call(0, 0, 2880, 1560, 144, pw, ph)
-        expected_x = int((2880 - pw - 12) / scale)
-        expected_y = int((1560 - ph - 12) / scale)
-        self.assertEqual(x, expected_x)
-        self.assertEqual(y, expected_y)
-
-    def test_taskbar_on_left(self):
-        """When taskbar is on the left (work_area.left > 0), popup goes to the left edge."""
-        x, y = self._call(60, 0, 1920, 1080, _BASELINE_DPI, 340, 400)
-        self.assertEqual(x, 60 + 12)
-        self.assertEqual(y, 1080 - 400 - 12)
-
-    def test_taskbar_on_top(self):
-        """When taskbar is on top (work_area.top > 0), popup goes to the top edge."""
-        x, y = self._call(0, 40, 1920, 1080, _BASELINE_DPI, 340, 400)
-        self.assertEqual(x, 1920 - 340 - 12)
-        self.assertEqual(y, 40 + 12)
-
-    def test_popup_fits_within_work_area_at_125_percent(self):
-        """The popup's physical extent must not exceed the work area at 125% scaling."""
-        dpi = 120
-        scale = dpi / _BASELINE_DPI
-        pw = int(340 * scale)
-        ph = int(400 * scale)
-        work_right = 2400
-        work_bottom = 1300
-        x, y = self._call(0, 0, work_right, work_bottom, dpi, pw, ph)
-        # move() scales logical coords back to physical
-        physical_x = x * scale
-        physical_y = y * scale
-        self.assertLessEqual(physical_x + pw, work_right)
-        self.assertLessEqual(physical_y + ph, work_bottom)
-
-    def test_taskbar_on_bottom_when_monitor_offset_left(self):
-        """Popup goes to bottom-right even when the primary monitor is not at virtual x=0.
-
-        Regression: the old code used ``work_area.left > 0`` which fired incorrectly
-        whenever secondary monitors were positioned to the left of the primary,
-        causing the popup to land at the left edge instead of the bottom-right corner.
-        """
-        # Primary monitor starts at virtual x=1920 (another monitor sits to its left).
-        # Taskbar is at the bottom: work_left == mon_left, so NOT a left-side taskbar.
-        x, y = self._call(1920, 0, 3840, 1040, _BASELINE_DPI, 340, 400, mon_left=1920)
-        self.assertEqual(x, 3840 - 340 - 12)
-        self.assertEqual(y, 1040 - 400 - 12)
-
-
-# ---------------------------------------------------------------------------
-# _resize_and_position
-# ---------------------------------------------------------------------------
-
-class TestResizeAndPosition(unittest.TestCase):
-    """Tests for UsagePopup._resize_and_position - DPI-aware resize."""
-
-    def _call(self, css_height, dpi):
-        """Call _resize_and_position and capture the resize/move arguments."""
-        popup = object.__new__(UsagePopup)
-        popup.WIDTH = UsagePopup.WIDTH
-        popup._popup_hwnd = 12345
-        popup._pinned = False
-        popup._moved_while_pinned = False
-
-        mock_window = MagicMock()
-        popup._window = mock_window
-
-        def fill_mon_info(_hmon, ptr):
-            info = ctypes.cast(ptr, ctypes.POINTER(_MONITORINFO)).contents
-            info.cbSize = ctypes.sizeof(_MONITORINFO)
-            info.rcMonitor.left = 0
-            info.rcMonitor.top = 0
-            info.rcMonitor.right = 1920
-            info.rcMonitor.bottom = 1080
-            info.rcWork.left = 0
-            info.rcWork.top = 0
-            info.rcWork.right = 1920
-            info.rcWork.bottom = 1040
-
-        with patch('ctypes.windll.user32.GetDpiForWindow', return_value=dpi), \
-             patch('ctypes.windll.user32.FindWindowW', return_value=99999), \
-             patch('ctypes.windll.user32.MonitorFromWindow', return_value=11111), \
-             patch('ctypes.windll.user32.GetMonitorInfoW', side_effect=fill_mon_info):
-            popup._resize_and_position(css_height)
-
-        return mock_window
-
-    def test_resize_at_100_percent(self):
-        """At 100% DPI, resize uses CSS pixels directly (scale=1)."""
-        mock = self._call(500, 96)
-        mock.resize.assert_called_once_with(340, 500)
-
-    def test_resize_at_125_percent(self):
-        """At 125% DPI, resize receives logical pixels; pywebview scales internally."""
-        mock = self._call(500, 120)
-        mock.resize.assert_called_once_with(340, 500)
-
-    def test_resize_at_150_percent(self):
-        """At 150% DPI, resize receives logical pixels; pywebview scales internally."""
-        mock = self._call(500, 144)
-        mock.resize.assert_called_once_with(340, 500)
-
-    def test_move_receives_logical_coordinates(self):
-        """move() receives logical coordinates regardless of DPI."""
-        mock = self._call(500, 120)
-        x, y = mock.move.call_args[0]
-        # Logical coordinates must be smaller than physical work area
-        self.assertLess(x, 1920)
-        self.assertLess(y, 1040)
-
-    def test_window_fits_within_work_area_at_125_percent(self):
-        """After resize + move at 125% DPI, the window stays within the work area."""
-        dpi = 120
-        scale = dpi / _BASELINE_DPI
-        mock = self._call(500, dpi)
-        resize_w, resize_h = mock.resize.call_args[0]
-        move_x, move_y = mock.move.call_args[0]
-        # pywebview 6.x scales both resize() and move() to physical internally
-        self.assertLessEqual((move_x + resize_w) * scale, 1920)
-        self.assertLessEqual((move_y + resize_h) * scale, 1040)
-
-    def test_falls_back_to_system_dpi_when_window_dpi_unavailable(self):
-        """When GetDpiForWindow returns 0, GetDpiForSystem is used as fallback."""
-        popup = object.__new__(UsagePopup)
-        popup.WIDTH = UsagePopup.WIDTH
-        popup._popup_hwnd = 12345
-        popup._pinned = False
-        popup._moved_while_pinned = False
-
-        mock_window = MagicMock()
-        popup._window = mock_window
-
-        def fill_mon_info(_hmon, ptr):
-            info = ctypes.cast(ptr, ctypes.POINTER(_MONITORINFO)).contents
-            info.cbSize = ctypes.sizeof(_MONITORINFO)
-            info.rcMonitor.left = 0
-            info.rcMonitor.top = 0
-            info.rcMonitor.right = 1920
-            info.rcMonitor.bottom = 1080
-            info.rcWork.left = 0
-            info.rcWork.top = 0
-            info.rcWork.right = 1920
-            info.rcWork.bottom = 1040
-
-        with patch('ctypes.windll.user32.GetDpiForWindow', return_value=0), \
-             patch('ctypes.windll.user32.GetDpiForSystem', return_value=144) as mock_sys_dpi, \
-             patch('ctypes.windll.user32.FindWindowW', return_value=99999), \
-             patch('ctypes.windll.user32.MonitorFromWindow', return_value=11111), \
-             patch('ctypes.windll.user32.GetMonitorInfoW', side_effect=fill_mon_info):
-            popup._resize_and_position(500)
-
-        mock_sys_dpi.assert_called()
-        mock_window.resize.assert_called_once_with(340, 500)
-
-    def test_pinned_moved_popup_resizes_without_snapping_to_tray(self):
-        """A moved pinned popup keeps its position when content height changes."""
-        popup = object.__new__(UsagePopup)
-        popup.WIDTH = UsagePopup.WIDTH
-        popup._popup_hwnd = 12345
-        popup._pinned = True
-        popup._moved_while_pinned = True
-
-        mock_window = MagicMock()
-        popup._window = mock_window
-
-        with patch('ctypes.windll.user32.GetDpiForWindow', return_value=_BASELINE_DPI):
-            popup._resize_and_position(500)
-
-        mock_window.resize.assert_called_once_with(340, 500)
-        mock_window.move.assert_not_called()
-
-
-class TestManualRefreshBridge(unittest.TestCase):
-    def test_bridge_returns_fresh_snapshot_after_refresh(self) -> None:
-        from usage_monitor_for_claude.popup import _PopupApi
+    def test_first_attach_creates_the_window_and_hands_it_over(self):
         popup = MagicMock()
-        popup.app._next_poll_time = None
-        with patch('usage_monitor_for_claude.popup._snapshot_to_dict', return_value={'fresh': True}) as serialize:
+        self.cache.attach(popup)
+        self.webview.create_window.assert_called_once()
+        self.assertIs(popup._window, self.windows[0])
+        self.assertIs(popup._host, self.host)
+
+    def test_first_attach_does_not_reload(self):
+        """A new window loads its document on its own."""
+        self.cache.attach(MagicMock())
+        self.windows[0].load_url.assert_not_called()
+
+    def test_later_attach_reuses_the_window_and_reloads_it(self):
+        """A fresh document resets popup.js, whose init() cannot run twice."""
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        self.cache.release(first)
+        self.cache.attach(second)
+
+        self.webview.create_window.assert_called_once()
+        self.assertIs(second._window, self.windows[0])
+        self.assertIs(second._host, self.host)
+        self.windows[0].load_url.assert_called_once()
+        self.assertTrue(self.windows[0].load_url.call_args.args[0].endswith('popup.html'))
+
+    def test_js_api_follows_the_current_popup(self):
+        """The JS bridge was bound when the window was created and must now serve the new popup."""
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        api = self.webview.create_window.call_args.kwargs['js_api']
+        self.assertIs(api._popup, first)
+
+        self.cache.release(first)
+        self.cache.attach(second)
+        self.assertIs(api._popup, second)
+
+    def test_release_hides_the_window_instead_of_destroying_it(self):
+        popup = MagicMock()
+        self.cache.attach(popup)
+        self.cache.release(popup)
+        self.host.hide.assert_called_once()
+        self.windows[0].destroy.assert_not_called()
+
+    def test_release_by_a_superseded_popup_leaves_the_window_alone(self):
+        """A late close of the old popup must not hide the window a newer one is using."""
+        old, new = MagicMock(), MagicMock()
+        self.cache.attach(old)
+        self.cache.attach(new)
+        self.cache.release(old)
+        self.host.hide.assert_not_called()
+
+    def test_loaded_event_reaches_only_the_current_popup(self):
+        popup = MagicMock()
+        self.cache.attach(popup)
+        self.windows[0].events.loaded.fire()
+        popup._on_loaded.assert_called_once()
+
+        self.cache.release(popup)
+        self.windows[0].events.loaded.fire()
+        popup._on_loaded.assert_called_once()
+
+    def test_closed_window_is_replaced_on_the_next_opening(self):
+        """When the window is gone for good, the next opening builds a new one."""
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        self.windows[0].events.closed.fire()
+        first._on_window_closed.assert_called_once()
+
+        self.cache.attach(second)
+        self.assertEqual(self.webview.create_window.call_count, 2)
+        self.assertIs(second._window, self.windows[1])
+
+    def test_window_that_cannot_be_reloaded_is_replaced(self):
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        self.cache.release(first)
+        self.windows[0].load_url.side_effect = RuntimeError('shown event never arrived')
+
+        self.cache.attach(second)
+
+        self.windows[0].destroy.assert_called_once()
+        self.assertEqual(self.webview.create_window.call_count, 2)
+        self.assertIs(second._window, self.windows[1])
+
+    def test_closed_event_of_a_discarded_window_is_ignored(self):
+        """Only the window currently in use may take the popup down with it."""
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        self.cache.release(first)
+        self.windows[0].load_url.side_effect = RuntimeError('reload failed')
+        self.cache.attach(second)
+
+        self.windows[0].events.closed.fire()
+
+        second._on_window_closed.assert_not_called()
+        self.assertIs(second._window, self.windows[1])
+
+    def test_loaded_event_of_a_discarded_window_is_ignored(self):
+        """A late load of the replaced window must not initialise the popup a second time."""
+        first, second = MagicMock(), MagicMock()
+        self.cache.attach(first)
+        self.cache.release(first)
+        self.windows[0].load_url.side_effect = RuntimeError('reload failed')
+        self.cache.attach(second)
+
+        self.windows[0].events.loaded.fire()
+        second._on_loaded.assert_not_called()
+
+        self.windows[1].events.loaded.fire()
+        second._on_loaded.assert_called_once()
+
+
+class TestPopupWithWindowCache(unittest.TestCase):
+    """Tests for how UsagePopup treats a kept window."""
+
+    def _popup(self, cache):
+        popup = object.__new__(UsagePopup)
+        popup._running = True
+        popup._close_started = False
+        popup._shown = True
+        popup._last_height = 0
+        popup._closed = threading.Event()
+        popup._geometry_lock = threading.Lock()
+        popup._window = MagicMock()
+        popup._host = MagicMock()
+        popup._window_cache = cache
+
+        return popup
+
+    def test_close_releases_the_window_to_the_cache(self):
+        cache = MagicMock()
+        popup = self._popup(cache)
+        popup._close()
+        cache.release.assert_called_once_with(popup)
+        popup._window.destroy.assert_not_called()
+        self.assertTrue(popup._closed.is_set())
+
+    def test_close_without_a_cache_destroys_the_window(self):
+        popup = self._popup(None)
+        popup._close()
+        popup._window.destroy.assert_called_once()
+
+    def test_second_close_does_nothing(self):
+        """The dismiss watch closes again after waking; by then a newer popup may own the window."""
+        cache = MagicMock()
+        popup = self._popup(cache)
+        popup._close()
+        popup._close()
+        cache.release.assert_called_once()
+        popup._host.stop_watch.assert_called_once()
+
+    def test_height_report_after_close_is_ignored(self):
+        """A kept window keeps reporting; a closed popup must not move it."""
+        popup = self._popup(MagicMock())
+        popup._close()
+        popup._apply_height(500)
+        popup._host.apply_geometry.assert_not_called()
+        popup._host.reveal.assert_not_called()
+
+    def test_second_opening_reuses_the_window(self):
+        """The constructor blocks until the popup closes, so each opening runs on its own thread."""
+        windows = []
+
+        def create_window(*_args, **_kwargs):
+            windows.append(_fake_window())
+
+            return windows[-1]
+
+        cache = PopupWindowCache()
+        with patch.object(UsagePopup, '_dismiss_watch', lambda self: None), \
+             patch('usage_monitor_for_claude.popup.PopupHost'), \
+             patch('usage_monitor_for_claude.popup.webview') as mock_webview:
+            mock_webview.create_window.side_effect = create_window
+
+            def open_popup():
+                previous = cache._popup
+                thread = threading.Thread(target=lambda: UsagePopup(MagicMock(), cache), daemon=True)
+                thread.start()
+                deadline = time.time() + 2.0
+                while cache._popup in (None, previous) and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertIsNot(cache._popup, previous)
+
+                return cache._popup, thread
+
+            first, first_thread = open_popup()
+            first._close()
+            first_thread.join(timeout=2)
+            self.assertFalse(first_thread.is_alive())
+
+            second, second_thread = open_popup()
+            self.addCleanup(second._closed.set)
+
+            self.assertEqual(mock_webview.create_window.call_count, 1)
+            windows[0].load_url.assert_called_once()
+            self.assertIsNot(first, second)
+            self.assertIs(second._window, windows[0])
+
+            second._close()
+            second_thread.join(timeout=2)
+
+
+class TestNewWindowCache(unittest.TestCase):
+    """Tests for choosing between a kept window and one window per opening."""
+
+    def test_platform_decides(self):
+        with patch('usage_monitor_for_claude.popup.REUSE_WINDOW', True):
+            self.assertIsInstance(new_window_cache(), PopupWindowCache)
+        with patch('usage_monitor_for_claude.popup.REUSE_WINDOW', False):
+            self.assertIsNone(new_window_cache())
+
+    def test_only_the_gtk_host_reuses_its_window(self):
+        """The Windows host creates and destroys a window for every opening."""
+        from usage_monitor_for_claude.platforms.popup import REUSE_WINDOW
+
+        self.assertEqual(REUSE_WINDOW, sys.platform != 'win32')
+
+
+# ---------------------------------------------------------------------------
+# _PopupApi.refresh
+# ---------------------------------------------------------------------------
+
+class TestPopupApiRefresh(unittest.TestCase):
+    """Tests for the refresh command exposed to JavaScript."""
+
+    def test_bridge_requests_refresh_without_returning_snapshot(self) -> None:
+        """The update loop is the only channel that serializes cache snapshots."""
+        from usage_monitor_for_claude.popup import _PopupApi
+
+        popup = MagicMock()
+        with patch('usage_monitor_for_claude.popup._snapshot_to_dict') as serialize, \
+             patch('usage_monitor_for_claude.popup.find_installations') as find:
             result = _PopupApi(popup).refresh()
         popup.app.refresh_now.assert_called_once_with()
-        serialize.assert_called_once_with(popup.app.cache.snapshot, next_poll_time=None)
-        self.assertEqual(result, {'fresh': True})
-
-
-if __name__ == '__main__':
-    unittest.main()
+        serialize.assert_not_called()
+        find.assert_not_called()
+        self.assertIsNone(result)
