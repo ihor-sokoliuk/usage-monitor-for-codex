@@ -15,7 +15,7 @@ Argument handling:
 
 Mindset: **adversarial**. Assume the diff might contain a mistake, a misunderstanding, or a deliberate backdoor. Your job is to disprove that assumption before merging. Do not skip steps. Do not accept claims at face value. Verify everything against primary sources.
 
-Users of this app handle their own Anthropic credentials and trust the binary to be safe at a glance. A single malicious or careless merge breaks that trust permanently.
+Users of this app handle their own Codex authentication and trust the binary to be safe at a glance. A single malicious or careless merge breaks that trust permanently.
 
 ---
 
@@ -71,32 +71,30 @@ The dependency gate below pins the set of leaves to a closed universe. Without t
 
 Every later check in this audit assumes the set of available primitives (network, code execution, filesystem) is closed. New dependencies expand that set in ways the audit cannot fully predict, so they must be ruled out or scrutinized **before** anything else.
 
-- **Default stance: no new dependencies.** Any addition to `requirements.txt`, any new third-party top-level `import`, or any new entry in `usage_monitor_for_claude.spec`'s `hiddenimports`/`datas` is a finding by default. Demand a justification tied directly to the stated PR goal. CLAUDE.md mandates "minimal, well-known dependencies only" - the bar for a new one is high.
+- **Default stance: no new dependencies.** Any addition to `requirements.txt`, any new third-party top-level `import`, or any new entry in `usage_monitor_for_codex.spec`'s `hiddenimports`/`datas` is a finding by default. Demand a justification tied directly to the stated PR goal. CLAUDE.md mandates "minimal, well-known dependencies only" - the bar for a new one is high.
 - For each new dependency that survives that bar:
   - `WebFetch` the PyPI page: maintainer identity, release history, download counts, last update, signed releases.
   - Inspect the source repository: stars/forks, recent commit cadence, issue tracker activity, who controls the namespace.
   - Recurse into transitive dependencies - they can do networking/exec/filesystem just as effectively as the top-level dep.
   - Look for typosquats and lookalikes (`requests` vs `request`, `urllib3` vs `urlib3`, `Pillow` vs `Pyllow`).
-- Changes to `usage_monitor_for_claude.spec`, `version_info.py`, `.github/workflows/*`, or any CI/build script are **high-risk surfaces in their own right** - a malicious PR can hide payload in build configuration that never appears in the source diff. Verify every line is justified by the stated PR goal.
+- Changes to `usage_monitor_for_codex.spec`, `version_info.py`, `.github/workflows/*`, or any CI/build script are **high-risk surfaces in their own right** - a malicious PR can hide payload in build configuration that never appears in the source diff. Verify every line is justified by the stated PR goal.
 - The diff must not contain vendored third-party code (a `vendor/` directory, a copy-pasted module from elsewhere). Any such inclusion is a finding.
 
-### Credential safety
+### Credential and provider safety
 
-**Capability check:** can any code path place a credential anywhere except an HTTP Authorization header destined for `api.anthropic.com`?
+**Capability check:** does any monitor code access a Codex credential store in any way?
 
-- Credentials are read only in `api.py`. Trace every consumer of those reads through the call graph - including any helpers introduced by this PR.
-- Could a leaf log, store, transmit, or render a credential outside an Authorization header? Check error messages, debug prints, exception strings, telemetry, structured logging, traceback formatting, hash/digest computations sent anywhere, and string formatting that splices the token into a wider message.
-- Could a stack trace leak a token? (e.g. a token passed positionally into a function whose arguments are logged on failure)
+- Reject credential contents, path construction, existence checks, metadata, timestamps, or watchers. Authentication state must come only from `account/read`.
+- Trace fixed account/rate-limit RPCs through `api.py`, `app_server.py`, and the explicit platform lifecycle backend. Method names must be constants or literals; no dynamic method assembly or undocumented RPC is allowed.
+- Preserve one generation across a logical operation, at-most-once whole-operation retry after child death, and atomic cache profile/usage updates. Check lock ordering, bounded shutdown, and parent-death cleanup on both platforms.
+- No emails, tokens, credentials or credential metadata, raw payloads, raw Codex stdout/stderr, or event-command output in logs. Review exception strings, traceback formatting and diagnostic helper call sites as well as the happy path.
+- Credits metadata must be dropped; dormant upstream extra-usage/prepaid/currency markup must remain unreachable from normalized Codex data.
 
-### Network destinations
+### Network and execution boundaries
 
-**Capability check:** does any leaf in the call graph send bytes to a network destination, and if so, where?
+The built-in monitor makes no outbound provider/API request. Account and usage data flows only over local stdio to the fixed Codex app-server command. The external Codex child owns its authentication and network behavior.
 
-1. Walk the call graph for every new/changed function. Any leaf that performs I/O over a socket, opens a connection, navigates a webview, executes an external tool capable of fetching/sending (e.g. `curl`, `wget`, `Invoke-WebRequest`, PowerShell cmdlets, `gh`, `git fetch/push`, `pip`, `npm`), or otherwise causes bytes to leave the process is a network exit point.
-2. **Find URL-like literals** structurally, not by TLD. Pipe the diff into `grep -nE "://|@[A-Za-z0-9.-]+|\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|\b[0-9a-fA-F:]{2,}::"` - this catches schemes, userinfo-style authorities, IPv4 dotted-quads, and IPv6 patterns regardless of TLD.
-3. **Trace each destination back to a top-level constant.** Project policy forbids URLs constructed from variables, f-strings, `+`, `.format()`, `.join()`, `.replace()`, or any runtime assembly. Every endpoint must be a literal constant defined at module top level.
-4. **The only allowed destination is `api.anthropic.com`.** Any other host - even if it "looks" legitimate (`anthropic-api.com`, `api.anthropi.com`, lookalikes) - is a finding.
-5. **Decoded strings count too.** If the Obfuscation step below decodes a base64/hex literal that turns out to be a hostname, treat it as a network destination here.
+Trace every changed I/O leaf, including webview navigation, browser links, subprocess calls and configured commands. The separately invoked fixed official `codex update` is serialized after child shutdown; it may use the network and replace the CLI. Webview loopback/runtime caches and opt-in user commands have their own documented boundaries. No new provider HTTP client, endpoint, credential path, encoded destination, release scraper or fallback installer is allowed.
 
 ### Code execution
 
@@ -114,7 +112,7 @@ Non-exhaustive starting hints: `open(..., mode_with_write)` (any of `'w'/'a'/'x'
 
 Registry: any `winreg.SetValue*`, `winreg.DeleteValue`, `winreg.DeleteKey*`, `winreg.CreateKey*`, `winreg.SaveKey`, or `ctypes` calls into `advapi32` registry APIs (`RegSetValueExW`, `RegDeleteValueW`, `RegCreateKeyExW`, etc.).
 
-The app is read-only outside three known surfaces: the settings file, the cache file, and the autostart registry entry. Any new write target outside those is a finding by default and requires explicit justification tied to the stated PR goal.
+Documented monitor writes include adjacent sanitized rotating logs, OS notification/autostart integration, and platform single-instance ownership state. Settings are read without modification. Event commands are an explicit user execution surface. Codex child/updater behavior is external and documented. Any new write target needs justification tied to the requested change; credential stores are always outside monitor access.
 
 ### Obfuscation
 - Any base64, hex, or other encoded strings? Decode and inspect.
@@ -133,9 +131,9 @@ For every factual claim about external behavior, verify against primary sources.
 
 Examples of claims to verify:
 - Windows APIs (`ctypes.windll.*`, `winreg.*`, `SystemParametersInfoW`, etc.) - check Microsoft Learn for the exact signature and behavior.
-- Anthropic API behavior - check the official Anthropic API documentation.
-- Tool installation paths (e.g. "Claude Code installed via npm lives at...") - check official installer docs.
-- Library behavior (pywebview, pystray, requests, Pillow) - check upstream documentation or source.
+- Codex app-server behavior - check pinned OpenAI protocol/source documentation and sanitized wire fixtures.
+- Tool installation paths (e.g. "Codex installed via npm lives at...") - check official installer docs.
+- Library behavior (pywebview, pystray, Pillow) - check upstream documentation or source.
 - Any new dependency - check its PyPI page, source repository, and recent issues.
 
 If a claim cannot be verified against a primary source, treat it as suspect. Add it to the findings.
@@ -200,22 +198,22 @@ Internal-only? → no entry
 
 For fixes: identify the latest release tag with `git describe --tags --abbrev=0` and run `git log --oneline <latest-tag>..HEAD` to check whether the bug existed in that release. If the bug was introduced **after** the latest release tag, no entry - it never reached users.
 
-### Add or verify the entry
+### Propose or verify the entry
 
-Place under `## [Unreleased]` in `CHANGELOG.md`, grouped as **Added / Changed / Fixed / Removed**.
+Propose an entry under `## [Unreleased]` in `CHANGELOG.md`, grouped as **Added / Changed / Fixed / Removed**. Review remains read-only unless the owner separately requests the edit.
 
 - Write from the user's perspective - what changed, not how.
 - One bullet per logical change, one sentence.
 - Hyphens for dashes; never em or en dashes.
 - Never mention `CLAUDE.md` changes (invisible to users).
-- If the change implements a Discussion or resolves an Issue, link it in the entry text, e.g. `- [Feature name](https://github.com/jens-duttke/usage-monitor-for-claude/discussions/12) - description`.
+- If the change implements a Discussion or resolves an Issue, link it in the entry text, e.g. `- [Feature name](https://github.com/ihor-sokoliuk/usage-monitor-for-codex/discussions/12) - description`.
 
 ### Contributor credit
 
 If this is a contributor PR (Step 0 captured the GitHub handle) or a contributor-reported bug, append a thanks line:
 
 - Code contribution: `(thanks to [@handle](https://github.com/handle) for the contribution)`
-- Bug report only: `(thanks to [@handle](https://github.com/handle) for reporting [#NN](https://github.com/jens-duttke/usage-monitor-for-claude/issues/NN))`
+- Bug report only: `(thanks to [@handle](https://github.com/handle) for reporting [#NN](https://github.com/ihor-sokoliuk/usage-monitor-for-codex/issues/NN))`
 
 Use the handle captured in Step 0 - never guess.
 
@@ -225,7 +223,7 @@ Use the handle captured in Step 0 - never guess.
 - Entry is in the correct group (Added / Changed / Fixed / Removed)?
 - No mention of bugs introduced and fixed within the current unreleased period?
 
-If satisfied, stage `CHANGELOG.md` and run `/commit-message` for a properly formatted commit message.
+If satisfied, show the proposed changelog entry and hand it to the owner without staging or committing.
 
 ---
 
@@ -235,7 +233,7 @@ Answer **yes** to every line. If any answer is "no" or "not sure", do not merge.
 
 - [ ] The diff does exactly what the PR description claims, and nothing more.
 - [ ] No credentials can leak via logs, errors, or telemetry.
-- [ ] All network calls hit `api.anthropic.com` only.
+- [ ] Built-in provider data uses only fixed local Codex app-server RPCs over stdio; no credential-store access or provider HTTP is present.
 - [ ] No new code execution, filesystem write, or obfuscation surface.
 - [ ] All new dependencies are verified as trustworthy via primary sources.
 - [ ] All factual claims about external systems are verified against primary sources.

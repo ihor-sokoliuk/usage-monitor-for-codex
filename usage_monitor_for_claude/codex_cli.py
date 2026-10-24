@@ -14,6 +14,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .platforms import IS_WINDOWS, no_window_kwargs
+from .settings import CLI_COMMAND
+
 __all__ = [
     'CHANGELOG_URL', 'CODEX_CLI_PATH', 'PROJECT_URL', 'CliUpdateResult',
     'CodexInstallation', 'cli_version', 'find_installations', 'update_cli',
@@ -32,6 +35,7 @@ _EXTENSION_DIRS: list[tuple[str, Path]] = [
 ]
 _EXTENSION_PREFIX = 'openai.chatgpt-'
 _version_cache: dict[Path, tuple[float, str]] = {}
+_command_version_cache: dict[tuple[str, ...], str] = {}
 
 
 def _discover_cli_path() -> Path:
@@ -46,6 +50,13 @@ def _discover_cli_path() -> Path:
                     return executable_sibling
         else:
             return path
+
+    if not IS_WINDOWS:
+        candidates = (Path.home() / '.local' / 'bin' / 'codex', Path('/usr/local/bin/codex'), Path('/usr/bin/codex'))
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[0]
 
     localappdata = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
     installer_path = localappdata / 'Programs' / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe'
@@ -93,6 +104,11 @@ def find_installations() -> list[CodexInstallation]:
         if version:
             results.append(CodexInstallation('CLI', version, CODEX_CLI_PATH))
 
+    for name, command in CLI_COMMAND.items():
+        version = _command_version(command)
+        if version:
+            results.append(CodexInstallation(name, version, Path(command[-1])))
+
     for ide_name, extension_directory in _EXTENSION_DIRS:
         try:
             if not extension_directory.is_dir():
@@ -131,14 +147,10 @@ def cli_version(path: Path) -> str:
         if cached and cached[0] == modified_time:
             return cached[1]
 
-        process = subprocess.run(
-            [str(path), '--version'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        match = re.search(r'(\d+\.\d+\.\d+)', process.stdout.strip())
+        process = _run_cli([str(path), '--version'], timeout=10)
+        if process.returncode != 0:
+            return ''
+        match = re.search(r'(\d+\.\d+\.\d+)', (process.stdout or '').strip())
         version = match.group(1) if match else ''
         _version_cache[path] = (modified_time, version)
         return version
@@ -154,13 +166,7 @@ def update_cli() -> CliUpdateResult:
     old_version = cli_version(CODEX_CLI_PATH)
     log.info('codex update started (installed: %s)', old_version or '?')
     try:
-        process = subprocess.run(
-            [str(CODEX_CLI_PATH), 'update'],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        process = _run_cli([str(CODEX_CLI_PATH), 'update'], timeout=120)
     except subprocess.TimeoutExpired:
         log.warning('codex update -> timeout')
         return CliUpdateResult(False, False, old_version, old_version, 'Timeout')
@@ -181,3 +187,51 @@ def update_cli() -> CliUpdateResult:
     updated = bool(old_version and new_version and new_version != old_version)
     log.info('codex update -> OK (installed: %s, updated: %s)', new_version or '?', updated)
     return CliUpdateResult(True, updated, old_version, new_version or old_version, '')
+
+
+def _command_version(command: list[str]) -> str:
+    """Read a display-only command version once per process lifetime."""
+    if not command:
+        return ''
+    key = tuple(command)
+    if key in _command_version_cache:
+        return _command_version_cache[key]
+    try:
+        process = _run_cli([*command, '--version'], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    match = re.search(r'(\d+\.\d+\.\d+)', process.stdout.strip()) if process.returncode == 0 else None
+    version = match.group(1) if match else ''
+    _command_version_cache[key] = version
+    return version
+
+
+def _run_cli(command: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    """Capture command output as UTF-8, rejecting missing capture streams.
+
+    Parameters
+    ----------
+    command : list[str]
+        Executable and arguments selected by the caller.
+    timeout : int
+        Maximum command duration in seconds.
+
+    Returns
+    -------
+    subprocess.CompletedProcess[str]
+        Completed process with both captured streams present.
+
+    Raises
+    ------
+    OSError
+        Command startup or output capture failed.
+    subprocess.TimeoutExpired
+        The command exceeded the timeout.
+    """
+    process = subprocess.run(
+        command, capture_output=True, text=True, encoding='utf-8', errors='replace',
+        timeout=timeout, **no_window_kwargs(),
+    )
+    if process.stdout is None or process.stderr is None:
+        raise OSError('CLI output could not be captured')
+    return process

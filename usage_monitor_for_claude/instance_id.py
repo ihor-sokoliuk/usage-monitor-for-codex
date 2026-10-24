@@ -51,7 +51,10 @@ def parse_codex_home(argv: list[str]) -> str | None:
     if value is None:
         return None
 
-    value = value.strip().strip('"').rstrip('\\/')
+    raw_value = value.strip().strip('"')
+    value = raw_value.rstrip('\\/')
+    if not value and Path(raw_value).is_absolute():
+        value = Path(raw_value).anchor
     if not value:
         return None
 

@@ -51,7 +51,9 @@ function init(config) {
         extraSection: document.getElementById('extraSection'),
         extraSpent: document.getElementById('extraSpent'),
         extraPct: document.getElementById('extraPct'),
+        extraBarContainer: document.getElementById('extraBarContainer'),
         extraFill: document.getElementById('extraFill'),
+        extraBalance: document.getElementById('extraBalance'),
         installSection: document.getElementById('installSection'),
         installRows: document.getElementById('installRows'),
         statusSection: document.getElementById('statusSection'),
@@ -184,8 +186,12 @@ function updateData(data) {
     els.extraSection.classList.toggle('visible', extraVisible);
     if (hasExtra) {
         els.extraSpent.textContent = data.extra.spent_text;
+        els.extraPct.style.display = data.extra.has_limit ? '' : 'none';
         els.extraPct.textContent = data.extra.pct_text;
+        els.extraBarContainer.style.display = data.extra.has_limit ? '' : 'none';
         els.extraFill.style.width = `${data.extra.fill_pct * 100}%`;
+        els.extraBalance.textContent = data.extra.balance_text || '';
+        els.extraBalance.style.display = data.extra.balance_text ? '' : 'none';
     }
 
     const hasInstalls = !!data.installations?.length;
@@ -324,6 +330,9 @@ function formatCountdown(totalSeconds) {
 }
 
 function updateUsageBars(entries) {
+    // Rebuild whenever the field set changes, not only the count - after an
+    // account switch the same number of bars can carry different quotas, and
+    // an in-place update would show the new values under the old labels.
     const bars = els.usageBars.children;
     const sameFields = entries.length === bars.length
         && entries.every((entry, i) => bars[i].dataset.key === entry.key);

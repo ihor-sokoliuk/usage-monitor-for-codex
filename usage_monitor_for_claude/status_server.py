@@ -1,4 +1,9 @@
-"""Optional loopback-only access to sanitized, cached usage snapshots."""
+"""
+Local Usage Endpoint
+====================
+
+Optional loopback-only access to sanitized, cached usage snapshots.
+"""
 from __future__ import annotations
 
 import json
@@ -45,8 +50,14 @@ def build_snapshot(cache: Any, provider_id: str, display_name: str) -> dict[str,
         if not isinstance(entry, dict) or 'utilization' not in entry:
             continue
         value = entry['utilization']
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             value = 0
+        else:
+            try:
+                if not math.isfinite(value):
+                    value = 0
+            except OverflowError:
+                value = 0
         reset = entry.get('resets_at')
         windows[key] = {'utilization': round(value), 'resets_at': reset if isinstance(reset, str) else ''}
     return {
@@ -142,6 +153,8 @@ class StatusServer:
 
     def start(self) -> None:
         """Bind loopback and serve; raise OSError when binding fails."""
+        if self._server is not None:
+            return
         server = _StatusHTTPServer(('127.0.0.1', self._port), _StatusHandler)
         server.cache, server.provider_id, server.display_name = self._cache, self._provider_id, self._display_name
         self._server = server

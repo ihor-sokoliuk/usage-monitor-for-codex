@@ -1,9 +1,11 @@
 """
 Popup JS Tests
-==============
+===============
 
-Behavior tests for popup.js DOM updates, executed with Node.js against a
-minimal DOM stub. The tests are skipped when Node.js is unavailable.
+Behavior tests for popup.js DOM update logic, executed with Node.js
+against a minimal DOM stub.  Skipped when Node.js is not installed -
+the app itself never needs Node; it is only used as a test runner
+for the popup's JavaScript.
 """
 from __future__ import annotations
 
@@ -15,8 +17,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 _POPUP_JS = Path(__file__).parent.parent / 'usage_monitor_for_claude' / 'popup' / 'popup.js'
+
 _NODE = shutil.which('node')
 
+# Minimal DOM stub covering exactly the APIs the bar create/update path uses.
 _DOM_STUB = r'''
 class StubElement {
     constructor(tag) {
@@ -37,6 +41,9 @@ class StubElement {
                 element.className = [...classes].join(' ');
                 return on;
             },
+            add(name) { const classes = element._classSet(); classes.add(name); element.className = [...classes].join(' '); },
+            remove(name) { const classes = element._classSet(); classes.delete(name); element.className = [...classes].join(' '); },
+            contains(name) { return element._classSet().has(name); },
         };
     }
     _classSet() { return new Set(this.className.split(/\s+/).filter(Boolean)); }
@@ -86,11 +93,28 @@ function makeEntry(overrides) {
         warn: false, dividers: [], marker_rel: null, reset_text: '',
     }, overrides);
 }
+
+// Full element set for the scenarios that drive updateData() end to end.
+function makeEls() {
+    const names = [
+        'accountSection', 'emailRow', 'emailValue', 'planRow', 'planValue',
+        'usageSection', 'headingUsage', 'usageBars',
+        'extraSection', 'extraSpent', 'extraPct', 'extraBarContainer', 'extraFill', 'extraBalance',
+        'installSection', 'installRows', 'statusSection', 'statusText',
+    ];
+    return Object.fromEntries(names.map((name) => [name, document.createElement('div')]));
+}
+
+function makeExtra(overrides) {
+    return Object.assign({
+        has_limit: true, pct_text: '25%', fill_pct: 0.25, spent_text: '$25.00 / $100.00 spent', balance_text: '',
+    }, overrides);
+}
 '''
 
 
 def _run_scenario(scenario: str) -> dict:
-    """Execute popup.js with the DOM stub and return its JSON result."""
+    """Execute the DOM stub + popup.js + scenario with Node and parse its JSON output."""
     script = _DOM_STUB + _POPUP_JS.read_text(encoding='utf-8') + _SCENARIO_PRELUDE + scenario
     with TemporaryDirectory() as tmp:
         script_path = Path(tmp) / 'scenario.js'
@@ -103,9 +127,12 @@ def _run_scenario(scenario: str) -> dict:
 
 @unittest.skipUnless(_NODE, 'Node.js not available')
 class TestUsageBarUpdates(unittest.TestCase):
-    """Tests for updateUsageBars and updateBarElement."""
+    """Tests for updateUsageBars/updateBarElement in popup.js."""
 
     def test_changed_field_set_with_equal_count_updates_labels(self):
+        """When the set of quota fields changes but the count stays the same
+        (e.g. an account switch between plans), the bars must not show the new
+        percentages under the old labels."""
         result = _run_scenario('''
 updateUsageBars([
     makeEntry({ key: 'five_hour', label: '5h', pct_text: '10%' }),
@@ -126,6 +153,9 @@ console.log(JSON.stringify(els.usageBars.children.map((bar) => ({
         ])
 
     def test_marker_and_divider_positions_stable_across_update(self):
+        """The 2 px marker/divider elements are centered with a -1px correction
+        on create; an in-place update must use the identical expression, or the
+        elements shift by 1 px after the first data update."""
         result = _run_scenario('''
 const fields = { key: 'five_hour', label: '5h', marker_rel: 0.5, dividers: [0.25] };
 updateUsageBars([makeEntry(Object.assign({ pct_text: '10%' }, fields))]);
@@ -144,6 +174,7 @@ console.log(JSON.stringify({ before, after }));
         self.assertEqual(result['after'], result['before'])
 
     def test_unchanged_field_set_updates_in_place(self):
+        """With an unchanged field set, bars are updated in place (no rebuild)."""
         result = _run_scenario('''
 updateUsageBars([makeEntry({ key: 'five_hour', label: '5h', pct_text: '10%' })]);
 const barBefore = els.usageBars.children[0];
@@ -155,6 +186,45 @@ console.log(JSON.stringify({
 }));
 ''')
         self.assertEqual(result, {'sameElement': True, 'pct': '50%', 'fillWidth': '50%'})
+
+
+@unittest.skipUnless(_NODE, 'Node.js not available')
+class TestExtraUsageSection(unittest.TestCase):
+    """Tests for the prepaid balance line in the extra-usage section."""
+
+    def test_balance_line_shown_when_present(self):
+        """A rendered balance is shown below the extra-usage bar."""
+        result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: '$55.97 available' }), installations: [], status: null });
+console.log(JSON.stringify({ text: els.extraBalance.textContent, display: els.extraBalance.style.display }));
+''')
+        self.assertEqual(result, {'text': '$55.97 available', 'display': ''})
+
+    def test_balance_line_hidden_when_absent(self):
+        """Without a balance the line is hidden, leaving the section as it was before."""
+        result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra(), installations: [], status: null });
+const empty = { text: els.extraBalance.textContent, display: els.extraBalance.style.display };
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: undefined }), installations: [], status: null });
+const missing = { text: els.extraBalance.textContent, display: els.extraBalance.style.display };
+console.log(JSON.stringify({ empty, missing }));
+''')
+        self.assertEqual(result, {
+            'empty': {'text': '', 'display': 'none'},
+            'missing': {'text': '', 'display': 'none'},
+        })
+
+    def test_balance_line_cleared_on_update(self):
+        """A balance that becomes unavailable is removed instead of lingering."""
+        result = _run_scenario('''
+els = makeEls();
+updateData({ profile: null, usage: [], extra: makeExtra({ balance_text: '$55.97 available' }), installations: [], status: null });
+updateData({ profile: null, usage: [], extra: makeExtra(), installations: [], status: null });
+console.log(JSON.stringify({ text: els.extraBalance.textContent, display: els.extraBalance.style.display }));
+''')
+        self.assertEqual(result, {'text': '', 'display': 'none'})
 
 
 if __name__ == '__main__':

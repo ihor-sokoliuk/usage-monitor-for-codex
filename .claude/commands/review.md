@@ -23,12 +23,12 @@ Run `git diff --staged` and critically review EVERY changed file:
 - No ambiguous names like `other`, `data2`, `flag` - every name must be immediately clear.
 
 ### Security (especially for changes touching `api.py`)
-- No credentials in logs, error messages, or anywhere outside HTTP Authorization headers.
-- All URLs and API endpoints are top-level constants - no dynamic URL construction.
+- No credentials, credential metadata, emails, raw provider payloads, raw Codex output, or event-command output in logs or error messages.
+- Provider method names are fixed auditable constants or literals; never construct RPC methods dynamically.
 - No `eval()`, `exec()`, `compile()`, or dynamic imports.
-- No file write operations (the app is read-only).
+- Only documented local log, autostart, runtime ownership, and explicit user-command writes are allowed; never access a Codex credential store.
 - No obfuscation, no base64-encoded strings, no encoded URLs or tokens.
-- Network communication exclusively with `api.anthropic.com`.
+- Built-in provider communication uses only fixed local Codex app-server RPCs over stdio. Codex itself, official updates, webview internals, and user event commands have their documented separate boundaries.
 
 ### Concurrency & Resource Management
 - Race conditions in threading code (check-then-act patterns, shared mutable state)?
@@ -74,7 +74,7 @@ Summarize your findings before moving to the next step.
 - Changed project structure or dependencies?
 - Important architectural decisions made?
 
-Apply necessary changes directly.
+Report proposed corrections. Review is read-only unless the owner separately requests these edits.
 
 ## Step 3: Test Coverage Check
 
@@ -86,7 +86,7 @@ Review test coverage for the staged changes:
 - Do existing tests still match the changed behavior, or do they need updating?
 - Run `python -m unittest discover -s tests` to verify all tests pass.
 
-If tests are missing or failing, fix them directly.
+If tests are missing or failing, report the cause and proposed repair; do not mutate the artifact without separate authorization.
 
 ## Step 4: Final Cleanup
 
@@ -99,13 +99,13 @@ Run `git diff --staged` again and review ALL staged files one last time:
 - No `# type: ignore` without specific error code?
 - No docstrings or comments mentioning "changes", "improvements", or "type hints"?
 
-If you find issues in this step, fix them directly.
+Report issues found in this step. Apply a fix only when the owner has separately requested changes.
 
 ## Summary
 
 Provide a brief summary:
 1. What was reviewed
-2. Which issues were found and fixed
+2. Which issues were found, and which separately authorized fixes were made
 3. Which documentation was updated
 4. Whether the staged changes are now ready to commit
 
