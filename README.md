@@ -11,7 +11,7 @@ A lightweight Windows tray app with experimental Linux support. It reads ChatGPT
 - **Portable on Windows** - one EXE, no installation or Python runtime. Linux runs from source using system GTK and WebKit libraries
 - **Zero configuration for one account** - uses your existing Codex ChatGPT sign-in; authentication belongs to the local app-server
 - **Live tray icon** - configurable quota bars or two stacked percentages, configurable tooltip, automatic substitution when a quota is absent, and theme-aware colors
-- **Detail popup** - account information, all detected usage windows, friendly model labels, reset countdowns, exact field exclusions, and a stale-data indicator. Pin and drag the popup or hide sections in a compact pinned view
+- **Detail popup** - account information, all detected usage windows, friendly model labels, reset countdowns, exact field exclusions, and a stale-data indicator. Use **Refresh now** in the popup or tray menu to request an update. Refresh becomes available 30 seconds after a usage request finishes; requests near a quota reset wait until just after it, and rate-limit backoff still applies. The popup shows the wait time. Pin and drag the popup or hide sections in a compact pinned view
 - **Codex versions** - reports the native CLI and `openai.chatgpt` extensions found in VS Code, Cursor, and Windsurf
 - **Smart alerts** - per-field percentage thresholds, time-aware pace alerts, and reset notifications
 - **[Event commands](docs/event-commands.md)** - opt-in commands on quota reset, threshold, startup, or your tray quick action. The former double-click setting remains a compatibility alias
@@ -86,7 +86,7 @@ Linux cleanup uses a dedicated supervisor, control-pipe parent-death detection, 
 | Left-click | Detail popup, or panel menu on desktops that keep the click |
 | Double-click on Windows | Configured quick action |
 | Run Quick Action in the menu | Same configured command, including on Linux |
-| Right-click | Popup, autostart, command tests, restart, project link, and quit |
+| Right-click | Popup, refresh, quick action, autostart, command tests, restart, project link, and quit |
 | Escape or click outside | Closes an unpinned popup |
 
 ### Tray icon not visible?

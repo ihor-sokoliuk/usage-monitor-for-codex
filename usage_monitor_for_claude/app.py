@@ -18,7 +18,7 @@ from typing import Any
 import pystray  # type: ignore[import-untyped]  # no type stubs available
 
 from .api import auth_revision, restart_child
-from .cache import UsageCache
+from .cache import RESET_BUFFER, UsageCache
 from .codex_cli import PROJECT_URL
 from .command import run_event_command
 from .instance_id import effective_config_dir, is_default_config_dir
@@ -42,10 +42,6 @@ __all__ = ['UsageMonitorForCodex', 'crash_log']
 
 log = logging.getLogger(__name__)
 PYSTRAY_ICON_NAME = 'usage_monitor_for_codex'
-
-# Seconds after a reset at which to place the confirming poll.  A small buffer
-# absorbs minor timing differences (clocks, caches, server-side propagation).
-RESET_BUFFER = 5
 
 
 def _future_iso(**kwargs: float) -> str:
@@ -117,6 +113,8 @@ class UsageMonitorForCodex:
         """
         self.running = True
         self.cache = UsageCache()
+        self._manual_refresh_condition = threading.Condition()
+        self._manual_refresh_active = False
         self._notification_identity_registered = notification_identity_registered
 
         # Last raw API response (may contain 'error') - for icon and polling decisions
@@ -165,6 +163,7 @@ class UsageMonitorForCodex:
                     T['menu_quick_action'], self.on_run_quick_action,
                     visible=self._quick_action_menu_visible,
                 ),
+                pystray.MenuItem(T['refresh'], self.on_refresh),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
                     T['autostart'], self.on_toggle_autostart,
@@ -226,6 +225,33 @@ class UsageMonitorForCodex:
     def on_restart(self, icon: Any = None, item: Any = None) -> None:
         self.restart_requested = True
         self.on_quit(icon, item)
+
+    def on_refresh(self, icon: Any = None, item: Any = None) -> None:
+        """Request a refresh without blocking the tray message pump."""
+        threading.Thread(target=self.refresh_now, daemon=True).start()
+
+    def refresh_now(self) -> bool:
+        """Refresh once, sharing completion with overlapping manual callers.
+
+        Returns
+        -------
+        bool
+            True for the caller performing the update; False for a caller
+            waiting for an already-running manual request to finish.
+        """
+        with self._manual_refresh_condition:
+            if self._manual_refresh_active:
+                while self._manual_refresh_active:
+                    self._manual_refresh_condition.wait()
+                return False
+            self._manual_refresh_active = True
+        try:
+            self.update(manual=True)
+        finally:
+            with self._manual_refresh_condition:
+                self._manual_refresh_active = False
+                self._manual_refresh_condition.notify_all()
+        return True
 
     def on_open_project(self, icon: Any = None, item: Any = None) -> None:
         webbrowser.open(PROJECT_URL)
@@ -406,7 +432,7 @@ class UsageMonitorForCodex:
 
     # Update orchestration
 
-    def update(self, force: bool = False) -> bool:
+    def update(self, force: bool = False, *, manual: bool = False) -> bool:
         """Request a data refresh from the cache and process the result.
 
         Parameters
@@ -414,8 +440,11 @@ class UsageMonitorForCodex:
         force : bool
             When True, bypass the cache cooldown and retained provider
             backoff so a confirmed account switch refreshes immediately.
+        manual : bool
+            Permit an early refresh while retaining the manual floor,
+            reset protection, backoff, and provider recovery guards.
         """
-        result = self.cache.update(force=force)
+        result = self.cache.update(force=force, manual=manual)
         if result.data is None:
             return False
 

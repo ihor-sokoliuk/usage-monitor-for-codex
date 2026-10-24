@@ -7,13 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from usage_monitor_for_claude import popup, tray_icon, verbose
+from usage_monitor_for_claude.cache import CacheSnapshot
 from usage_monitor_for_claude.platforms import linux
 
 
 class TestCodexPopupPayload(unittest.TestCase):
     def test_provider_model_label_and_durationless_quota(self):
         usage = {'quota_bengalfox': {'utilization': 17, 'resets_at': '', 'limit_name': 'gpt-5.2-codex-sonic'}}
-        snap = SimpleNamespace(usage=usage, profile=None, last_success_time=None, refreshing=False, last_error=None)
+        snap = CacheSnapshot(usage=usage, profile=None, last_success_time=None, refreshing=False, last_error=None, version=0)
         with patch.object(popup, 'POPUP_FIELDS', ['*']):
             result = popup._snapshot_to_dict(snap, installations=[])
         self.assertEqual(len(result['usage']), 1)
@@ -30,11 +31,11 @@ class TestCodexPopupPayload(unittest.TestCase):
         self.assertEqual(entries[0][0], 'Weekly (GPT-5.2-Codex-Sonic)')
 
     def test_provider_credit_metadata_never_renders_billing(self):
-        snap = SimpleNamespace(
+        snap = CacheSnapshot(
             usage={'five_hour': {'utilization': 10, 'resets_at': ''},
                    'credits': {'balance': 123},
                    'extra_usage': {'is_enabled': True, 'used_credits': 100, 'monthly_limit': 1000}},
-            profile=None, last_success_time=None, refreshing=False, last_error=None,
+            profile=None, last_success_time=None, refreshing=False, last_error=None, version=0,
         )
         result = popup._snapshot_to_dict(snap, installations=[])
         self.assertIsNone(result['extra'])
