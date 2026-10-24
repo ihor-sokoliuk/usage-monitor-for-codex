@@ -135,7 +135,10 @@ def auth_revision() -> int:
 def restart_child() -> None:
     """Terminate the app-server child so the next operation starts a fresh one."""
     if _transport is not None:
-        _transport.force_restart()
+        try:
+            _transport.force_restart()
+        except TransportError:
+            log.warning('scheduled child restart deferred; previous exit is unconfirmed')
 
 
 def shutdown_transport() -> None:

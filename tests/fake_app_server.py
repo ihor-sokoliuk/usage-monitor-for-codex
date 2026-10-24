@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,10 @@ def main() -> int:
     parser.add_argument('--state', default='')
     args = parser.parse_args()
 
+    if args.scenario == 'descendant':
+        time.sleep(60)
+        return 0
+
     data_requests_seen = 0
     deferred_request: dict | None = None
     for line in sys.stdin:
@@ -71,6 +76,18 @@ def main() -> int:
             continue
 
         data_requests_seen += 1
+        if args.scenario == 'blocked-reply' and data_requests_seen == 1:
+            emit({'id': request_id, 'result': LIMITS})
+            emit({'id': 'x' * 131072, 'method': 'tools/confirm', 'params': {}})
+            time.sleep(60)
+            continue
+        if args.scenario == 'with-descendant' and data_requests_seen == 1:
+            descendant = subprocess.Popen(
+                [sys.executable, __file__, '--scenario', 'descendant'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+            log_message(args.log, {'descendant_pid': descendant.pid})
         if args.scenario == 'die-on-first-request' and data_requests_seen == 1:
             return 1
         if args.scenario == 'slow':
@@ -125,6 +142,9 @@ def main() -> int:
         else:
             emit({'id': request_id, 'error': {'code': -32601, 'message': 'method not found'}})
 
+    log_message(args.log, {'event': 'stdin-eof'})
+    if args.scenario == 'ignore-eof':
+        time.sleep(60)
     return 0
 
 

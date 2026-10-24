@@ -6,8 +6,6 @@
         python -m http.server 8080
 
     Then open: http://localhost:8080/usage_monitor_for_claude/popup/dev.html
-
-    For the controls-free 340x493 README capture, append ?capture=1.
 -->
 <!DOCTYPE html>
 <html>
@@ -54,21 +52,6 @@
         background: #1e1e1e;
         visibility: hidden;
     }
-
-    /* Reproducible, controls-free layout for the README screenshot. */
-    body.capture {
-        display: block;
-        min-height: 0;
-        width: 340px;
-        overflow: hidden;
-    }
-
-    body.capture .dev-controls { display: none; }
-
-    body.capture iframe {
-        display: block;
-        margin: 0;
-    }
 </style>
 </head>
 <body>
@@ -85,10 +68,6 @@
 <iframe id="popup"></iframe>
 
 <script>
-if (new URLSearchParams(location.search).has('capture')) {
-    document.body.classList.add('capture');
-}
-
 const COLORS = {
     bg: '#1e1e1e', fg: '#cccccc', fg_dim: '#888888', fg_heading: '#ffffff', fg_link: '#4a9eff',
     bar_bg: '#333333', bar_fg: '#4a9eff', bar_fg_warn: '#e05050', bar_divider: '#000c', bar_marker: '#fffc',
@@ -106,27 +85,28 @@ const LANGS = [
 // locale so every text case can be inspected in any language.
 const PRESETS = {
     full: {
-        profile: { email: 'user@example.com', plan: 'Plus' },
+        profile: { email: 'user@example.com', plan: 'Team' },
         usage: [
             { unit: 'hour', suffix: '5hr', pct: 42, warn: false,
               reset: { kind: 'in', duration: '2h 30m', clock: '14:30' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.35 },
             { unit: 'week', suffix: '7 day', pct: 65, warn: true,
               reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
-            { unit: 'week', suffix: 'GPT 5 Pro', pct: 30, warn: false,
+            { unit: 'week', suffix: 'GPT-5.2-Codex', pct: 30, warn: false,
+              reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
+            { unit: 'week', suffix: 'GPT-5.2', pct: 12, warn: false,
               reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.55 },
         ],
         extra: null,
         installations: [
-            { name: 'CLI', version: '0.144.5' },
-            { name: 'VS Code', version: '26.707.91948' },
+            { name: 'Codex CLI', version: '0.101.0' },
         ],
         status: () => ({ last_success_time: now() - 3, next_poll_time: now() + 20, refreshing: false, error: null }),
     },
     minimal: {
         profile: null,
         usage: [
-            { unit: 'week', suffix: '7 day', pct: 10, warn: false,
-              reset: { kind: 'weekday', day: 'Sat', clock: '12:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.03 },
+            { unit: 'hour', suffix: '5hr', pct: 10, warn: false,
+              reset: { kind: 'in', duration: '4h 50m', clock: '17:00' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.03 },
         ],
         extra: null,
         installations: [],
@@ -142,17 +122,17 @@ const PRESETS = {
               reset: { kind: 'tomorrow', clock: '08:00' }, dividers: [0.143, 0.286, 0.429, 0.571, 0.714, 0.857], marker_rel: 0.80 },
         ],
         extra: null,
-        installations: [{ name: 'CLI', version: '0.144.5' }],
-        status: () => ({ last_success_time: now() - 300, next_poll_time: now() + 30, refreshing: false, error: 'Could not communicate with the Codex app-server.' }),
+        installations: [{ name: 'Codex CLI', version: '0.101.0' }],
+        status: () => ({ last_success_time: now() - 300, next_poll_time: now() + 30, refreshing: false, error: 'Codex app-server is unavailable.' }),
     },
     refreshing: {
-        profile: { email: 'user@example.com', plan: 'Plus' },
+        profile: { email: 'user@example.com', plan: 'Team' },
         usage: [
             { unit: 'hour', suffix: '5hr', pct: 42, warn: false,
               reset: { kind: 'in', duration: '2h 30m', clock: '14:30' }, dividers: [0.2, 0.4, 0.6, 0.8], marker_rel: 0.35 },
         ],
         extra: null,
-        installations: [{ name: 'CLI', version: '0.144.5' }],
+        installations: [{ name: 'Codex CLI', version: '0.101.0' }],
         // ~65 min ago -> exercises the "{h}h {m}m" duration variant in the footer.
         status: () => ({ last_success_time: now() - 3900, next_poll_time: null, refreshing: true, error: null }),
     },
@@ -221,6 +201,7 @@ function resolveData(name, loc) {
         pct_text: preset.extra.pct + '%',
         fill_pct: preset.extra.pct / 100,
         spent_text: loc.extra_usage_spent.replace('{used}', preset.extra.used).replace('{limit}', preset.extra.limit),
+        balance_text: preset.extra.balance ? loc.extra_usage_balance.replace('{balance}', preset.extra.balance) : '',
     } : null;
 
     let status = typeof preset.status === 'function' ? preset.status() : preset.status;
@@ -268,8 +249,8 @@ async function applyLanguage(code) {
         } } };
     // Demo set so toggling the pin button previews compact hiding of both
     // whole sections and an individual usage bar.
-    const compactHide = ['account', 'extra_usage', 'claude_code', 'status', 'seven_day_opus'];
-    win().init({ colors: COLORS, t: buildTranslations(currentLocale), app_version: '1.0.0', compact_hide: compactHide, data: resolveData(currentPreset, currentLocale) });
+    const compactHide = ['account', 'extra_usage', 'claude_code', 'status', 'seven_day_gpt_5_2'];
+    win().init({ colors: COLORS, t: buildTranslations(currentLocale), app_version: '1.24.0', compact_hide: compactHide, data: resolveData(currentPreset, currentLocale) });
 }
 
 function loadPreset(name) {

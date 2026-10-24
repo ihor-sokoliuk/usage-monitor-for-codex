@@ -50,6 +50,11 @@ def detect_lang_code(lang: str) -> str:
     elif base == 'indonesian':
         base = 'id'
     elif base.startswith('chinese'):
+        # Windows reports Chinese as e.g. 'Chinese (Simplified)_China' or
+        # 'Chinese (Traditional)_Hong Kong SAR'.  The script variant picks
+        # between the shipped zh files; the English region name from the
+        # original split can never match an ISO region code, so it is only
+        # used to infer the script when the name carries none.
         original_region = parts[1] if len(parts) > 1 else ''
         traditional = 'traditional' in base or original_region in ('Taiwan', 'Hong Kong SAR', 'Macao SAR')
         base = 'zh'

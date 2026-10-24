@@ -1,7 +1,6 @@
 """Entry point for ``python -m usage_monitor_for_claude``."""
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import subprocess
@@ -9,22 +8,29 @@ import sys
 import traceback
 from pathlib import Path
 
-from usage_monitor_for_claude.dpi import set_process_dpi_awareness
 from usage_monitor_for_claude.instance_id import parse_codex_home
+from usage_monitor_for_claude.platforms import (
+    no_window_kwargs, prepare_gui_environment, set_dpi_awareness, show_error_box,
+)
 
 _verbose = '--verbose' in sys.argv
 
 # --codex-home selects which Codex account to monitor. It must be
-# resolved into CODEX_HOME before any other package import:
-# api, settings, verbose and i18n all read the variable at import or
+# resolved into CODEX_HOME before any package import that reads the
+# variable: api, settings, verbose and i18n all read it at import or
 # first-use time. Keep every other package import below this block.
+#
+# instance_id and platforms are the only exceptions, imported above because
+# this block needs them. Neither reads CODEX_HOME at import time, and
+# platforms cannot start doing so - settings imports platforms, so the
+# reverse would be a cycle.
 _config_dir = parse_codex_home(sys.argv)
 if _config_dir is not None:
     _config_path = Path(_config_dir)
     if not _config_path.is_dir():
-        ctypes.windll.user32.MessageBoxW(
-            0, f'--codex-home directory does not exist:\n{_config_dir}',
-            'Usage Monitor for Codex - Error', 0x10,
+        show_error_box(
+            f'--codex-home directory does not exist:\n{_config_dir}',
+            'Usage Monitor for Codex - Error',
         )
         sys.exit(1)
     os.environ['CODEX_HOME'] = str(_config_path.resolve())
@@ -35,25 +41,21 @@ if _verbose and getattr(sys, 'frozen', False):
     from usage_monitor_for_claude.verbose import setup_console
     setup_console()
 
-# Per-Monitor V2 must be set before pywebview's legacy SetProcessDPIAware() call,
-# which only sets SYSTEM_DPI_AWARE and breaks native menu hover at high DPI.
-set_process_dpi_awareness()
+# Both must be settled before pywebview creates any window: DPI awareness
+# cannot be changed once a window exists, and the GUI toolkit reads its
+# backend from the environment as it loads.
+set_dpi_awareness()
+prepare_gui_environment()
 
 from usage_monitor_for_claude.logging_setup import configure_logging
 from usage_monitor_for_claude.settings import LOG_BACKUP_COUNT, LOG_MAX_BYTES
 
 try:
-    _log_path = configure_logging(
-        verbose=_verbose,
-        max_bytes=LOG_MAX_BYTES,
-        backup_count=LOG_BACKUP_COUNT,
-    )
+    _log_path = configure_logging(verbose=_verbose, max_bytes=LOG_MAX_BYTES, backup_count=LOG_BACKUP_COUNT)
 except OSError as exc:
-    ctypes.windll.user32.MessageBoxW(
-        0,
+    show_error_box(
         f'Cannot create the application log next to the executable:\n{exc}',
         'Usage Monitor for Codex - Logging Error',
-        0x10,
     )
     sys.exit(1)
 
@@ -61,7 +63,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _log_diagnostics(callback) -> None:
-    """Write verbose-style diagnostic output to the always-on log."""
+    """Write sanitized runtime diagnostics to the application log."""
     from usage_monitor_for_claude.verbose import capture_diagnostics
 
     for line in capture_diagnostics(callback).splitlines():
@@ -75,13 +77,15 @@ _log_diagnostics(print_startup_diagnostics)
 import webview  # type: ignore[import-untyped]  # no type stubs available
 
 from usage_monitor_for_claude.app import UsageMonitorForCodex, crash_log
-from usage_monitor_for_claude.single_instance import ensure_single_instance, release_instance_lock
+from usage_monitor_for_claude.platforms import register_notification_identity
+from usage_monitor_for_claude.platforms.instance import ensure_single_instance, release_instance_lock
 
 _result: dict = {}
+_notification_identity_registered = False
 
 
 def _verbose_step(label: str) -> None:
-    """Log a startup progress step; --verbose mirrors it to the console."""
+    """Log a startup progress step, mirrored to the console in verbose mode."""
     _logger.info('startup: %s', label)
 
 
@@ -92,7 +96,7 @@ def _run_app() -> None:
         _log_diagnostics(print_runtime_diagnostics)
 
         _verbose_step('UsageMonitorForCodex()...')
-        app = UsageMonitorForCodex()
+        app = UsageMonitorForCodex(notification_identity_registered=_notification_identity_registered)
         _verbose_step('UsageMonitorForCodex()... OK')
 
         _verbose_step('app.run...')
@@ -117,6 +121,12 @@ try:
         _verbose_step('another instance is running, exiting')
         sys.exit(0)
     _verbose_step('ensure_single_instance... OK')
+
+    # Give notifications a fixed logo instead of the live tray icon.
+    # Must run before any window is created (AppUserModelID requirement).
+    _verbose_step('register_notification_identity...')
+    _notification_identity_registered = register_notification_identity()
+    _verbose_step(f'register_notification_identity... {"OK" if _notification_identity_registered else "not registered, using tray balloons"}')
 
     # pywebview requires the main thread for its GUI event loop.
     # A persistent hidden window keeps the loop alive while the
@@ -148,15 +158,10 @@ try:
             # instance extracts to a fresh temp directory instead
             # of reusing the current (soon-to-be-deleted) one.
             env = {k: v for k, v in os.environ.items() if not k.startswith(('_PYI_', '_MEI'))}
-            subprocess.Popen(
-                [sys.executable, *passthrough_args],
-                env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            subprocess.Popen([sys.executable, *passthrough_args], env=env, **no_window_kwargs())
         else:
             subprocess.Popen(
-                [sys.executable, '-m', 'usage_monitor_for_claude', *passthrough_args],
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                [sys.executable, '-m', 'usage_monitor_for_claude', *passthrough_args], **no_window_kwargs(),
             )
 except Exception:
     crash_log(traceback.format_exc())
