@@ -641,6 +641,16 @@ class TestElapsedPct(unittest.TestCase):
         assert result is not None
         self.assertAlmostEqual(result, 50.0)
 
+    def test_weekly_divider_setting_preserves_wall_clock_elapsed(self, mock_dt) -> None:
+        """Equal dividers do not turn calendar time into a work-hour time scale."""
+        utc_now = datetime(2025, 1, 15, 12, tzinfo=timezone.utc)
+        self._setup(mock_dt, utc_now)
+        reset = utc_now + timedelta(seconds=PERIOD_7D / 2)
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 5):
+            result = elapsed_pct(reset.isoformat(), PERIOD_7D)
+        assert result is not None
+        self.assertEqual(result, 50.0)
+
 
 # ---------------------------------------------------------------------------
 # divider_positions
@@ -653,6 +663,12 @@ class TestDividerPositions(unittest.TestCase):
     construct inputs relative to the system timezone so results are predictable
     on any machine.
     """
+
+    def setUp(self) -> None:
+        """Keep default-calendar tests independent of local configuration."""
+        default_parts = patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', None)
+        default_parts.start()
+        self.addCleanup(default_parts.stop)
 
     @staticmethod
     def _local_to_utc_iso(naive_local: datetime) -> str:
@@ -704,6 +720,47 @@ class TestDividerPositions(unittest.TestCase):
         reset_iso = self._local_to_utc_iso(datetime(2025, 1, 22, 12, 0, 0))
         result = divider_positions(reset_iso, PERIOD_7D)
         self.assertEqual(len(result), 7)
+
+    def test_five_equal_weekly_sections(self) -> None:
+        """Five sections have four equal dividers, independent of reset alignment."""
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 5):
+            for reset in ('2030-06-05T14:37:00+00:00', '2030-06-05T00:00:00+00:00'):
+                with self.subTest(reset=reset):
+                    self.assertEqual(divider_positions(reset, PERIOD_7D), [.2, .4, .6, .8])
+
+    def test_one_weekly_section_has_no_internal_dividers(self) -> None:
+        """A single section removes only the internal weekly dividers."""
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 1):
+            self.assertEqual(divider_positions('2030-06-05T14:37:00+00:00', PERIOD_7D), [])
+
+    def test_maximum_weekly_sections(self) -> None:
+        """The maximum setting produces thirty internal dividers."""
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 31):
+            positions = divider_positions('2030-06-05T14:37:00+00:00', PERIOD_7D)
+        self.assertEqual(positions, [index / 31 for index in range(1, 31)])
+
+    def test_weekly_setting_preserves_other_durations(self) -> None:
+        """Sessions, day windows, and unknown durations keep their default dividers."""
+        reset = '2030-06-05T14:37:00+00:00'
+        for period in (0, 60 * 60, PERIOD_5H, 24 * 60 * 60, 3 * 24 * 60 * 60, 14 * 24 * 60 * 60):
+            with self.subTest(period=period):
+                expected = divider_positions(reset, period)
+                with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 5):
+                    self.assertEqual(divider_positions(reset, period), expected)
+
+    def test_equal_sections_accept_both_dst_changeover_windows(self) -> None:
+        """Equal sections do not depend on calendar offsets across either DST transition."""
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 5):
+            for reset in ('2026-11-04T11:00:00+00:00', '2027-03-17T11:00:00+00:00'):
+                with self.subTest(reset=reset):
+                    self.assertEqual(divider_positions(reset, PERIOD_7D), [.2, .4, .6, .8])
+
+    def test_equal_sections_require_valid_reset(self) -> None:
+        """An empty or malformed reset does not acquire dividers from the setting."""
+        with patch('usage_monitor_for_claude.formatting.WEEKLY_BAR_PARTS', 5):
+            for reset in ('', 'not-a-date'):
+                with self.subTest(reset=reset):
+                    self.assertEqual(divider_positions(reset, PERIOD_7D), [])
 
     def test_exactly_one_day_period_uses_midnights(self):
         """A period of exactly 24h subdivides at midnights, not hours."""

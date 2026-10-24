@@ -95,7 +95,7 @@ Windows may hide new icons. In taskbar settings, enable **UsageMonitorForCodex**
 
 ### Reading the progress bars
 
-The fill is percent consumed. Period dividers mark hours or local midnights where applicable. The vertical marker shows elapsed time; fill ahead of that marker turns red. Reset text gives a countdown and local clock time. A duration-less window has utilization and any supplied reset text, with no marker or dividers.
+The fill is percent consumed. Period dividers mark hours or local midnights where applicable. Seven-day bars can instead use [equal sections](docs/configuration.md#weekly-dividers). The vertical marker shows elapsed time; fill ahead of that marker turns red. Reset text gives a countdown and local clock time. A duration-less window has utilization and any supplied reset text, with no marker or dividers.
 
 ## Configuration
 

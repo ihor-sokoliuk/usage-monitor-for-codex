@@ -260,6 +260,14 @@ class TestSettingsOverrides(unittest.TestCase):
         settings = {'bg': '#000000', 'fg': '#ffffff', 'bar_fg': '#00ff00'}
         self._assert_overrides(settings, [('bg', '#000000'), ('fg', '#ffffff'), ('bar_fg', '#00ff00')])
 
+    def test_weekly_divider_override(self) -> None:
+        """The optional divider count loads through the normal settings path."""
+        self._assert_overrides({'weekly_bar_parts': 5}, [('weekly_bar_parts', 5)], absent=['poll_fast'])
+
+    def test_weekly_divider_default_is_omitted(self) -> None:
+        """Unrelated settings leave calendar weekly divisions selected by default."""
+        self._assert_overrides({'bg': '#000000'}, [('bg', '#000000')], absent=['weekly_bar_parts'])
+
     def test_partial_override_keeps_defaults(self):
         """Overriding one key does not affect other keys."""
         settings = {'poll_interval': 300}
@@ -335,6 +343,37 @@ class TestSettingsOverrides(unittest.TestCase):
 
 class TestSettingsValidation(unittest.TestCase):
     """Tests that invalid setting values are rejected with a MessageBox."""
+
+    def test_weekly_parts_accepts_integer_bounds(self) -> None:
+        """Weekly section counts accept one through thirty-one without warnings."""
+        for value in (1, 5, 31):
+            with self.subTest(value=value):
+                result, warning = self._run_validate({'weekly_bar_parts': value})
+                self.assertEqual(result['weekly_bar_parts'], value)
+                warning.assert_not_called()
+
+    def test_weekly_parts_rejects_out_of_range_integers(self) -> None:
+        """Invalid integer bounds appear in the settings warning and are ignored."""
+        for value, message in ((0, 'must be >= 1'), (-1, 'must be >= 1'), (32, 'must be <= 31')):
+            with self.subTest(value=value):
+                result, warning = self._run_validate({'weekly_bar_parts': value, 'bg': '#000'})
+                self.assertNotIn('weekly_bar_parts', result)
+                self.assertEqual(result['bg'], '#000')
+                warning.assert_called_once()
+                text, title = warning.call_args.args
+                self.assertIn('weekly_bar_parts', text)
+                self.assertIn(message, text)
+                self.assertIn('settings.json', text)
+                self.assertEqual(title, 'Usage Monitor for Codex - Settings Error')
+
+    def test_weekly_parts_rejects_non_integers(self) -> None:
+        """Boolean, null, floating-point and container values produce clear warnings."""
+        for value in (True, False, None, 5.0, 2.5, '5', [], {}):
+            with self.subTest(value=value):
+                result, warning = self._run_validate({'weekly_bar_parts': value})
+                self.assertNotIn('weekly_bar_parts', result)
+                warning.assert_called_once()
+                self.assertIn('weekly_bar_parts: expected an integer', warning.call_args.args[0])
 
     def test_valid_settings_no_message_box(self):
         """Valid settings pass through without MessageBox."""

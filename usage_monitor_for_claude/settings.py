@@ -34,7 +34,7 @@ __all__ = [
     'MAX_BACKOFF', 'NOTIFY_CODEX_UPDATE', 'ON_DOUBLE_CLICK_COMMAND',
     'ON_RESET_COMMAND', 'ON_STARTUP_COMMAND', 'ON_THRESHOLD_COMMAND', 'QUICK_ACTION_COMMAND',
     'POLL_ERROR', 'POLL_FAST', 'POLL_FAST_EXTRA', 'POLL_INTERVAL',
-    'POPUP_FIELDS', 'SETTINGS_FILENAME', 'TIME_FORMAT', 'TOOLTIP_FIELDS',
+    'POPUP_FIELDS', 'SETTINGS_FILENAME', 'TIME_FORMAT', 'TOOLTIP_FIELDS', 'WEEKLY_BAR_PARTS',
     'get_alert_thresholds',
 ]
 
@@ -43,6 +43,7 @@ _DEFAULT_POLL_INTERVAL = 180
 _DEFAULT_POLL_FAST = 120
 
 _NUMERIC_BOUNDS: dict[str, int] = {
+    'weekly_bar_parts': 1,
     'poll_interval': 1,
     'poll_fast': 1,
     'poll_fast_extra': 1,
@@ -147,6 +148,9 @@ def _validate(data: dict, path: Path) -> dict:
                 drop.append(key)
             elif value < min_val:
                 errors.append(f'  {key}: must be >= {min_val}, got {value}')
+                drop.append(key)
+            elif key == 'weekly_bar_parts' and value > 31:
+                errors.append(f'  {key}: must be <= 31, got {value}')
                 drop.append(key)
 
         elif key in _COLOR_KEYS:
@@ -392,6 +396,9 @@ ICON_STYLE: str = _S.get('icon_style', 'number+bars')
 
 # Tooltip fields
 TOOLTIP_FIELDS: list[str] = _S.get('tooltip_fields', ['five_hour', 'seven_day'])
+
+# None retains calendar-day dividers; explicit values select equal sections.
+WEEKLY_BAR_PARTS: int | None = _S.get('weekly_bar_parts')
 
 # Popup fields
 POPUP_FIELDS: list[str] = _S.get('popup_fields', ['*'])

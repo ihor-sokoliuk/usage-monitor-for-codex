@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .i18n import T
-from .settings import CURRENCY_SYMBOL, TIME_FORMAT, TOOLTIP_FIELDS, _SYSTEM_CURRENCY_SYMBOL
+from .settings import CURRENCY_SYMBOL, TIME_FORMAT, TOOLTIP_FIELDS, WEEKLY_BAR_PARTS, _SYSTEM_CURRENCY_SYMBOL
 
 __all__ = [
     'divider_positions', 'elapsed_pct', 'expand_popup_fields', 'field_period', 'format_credits',
@@ -313,7 +313,9 @@ def divider_positions(resets_at: str, period_seconds: int) -> list[float]:
 
     Five-hour periods are split into five equal hour sections, independent
     of clock alignment.  Periods of a day or longer are subdivided at local
-    midnight boundaries (e.g. seven day marks on a weekly bar).  Other
+    midnight boundaries (e.g. seven day marks on a weekly bar). When
+    ``weekly_bar_parts`` is set, seven-day periods use that many equal
+    sections instead. Elapsed-time calculations are unchanged. Other
     sub-day periods have no dividers - their subdivision is a deliberate
     design decision for if and when such quota types exist.
 
@@ -336,6 +338,9 @@ def divider_positions(resets_at: str, period_seconds: int) -> list[float]:
 
     try:
         reset_utc = datetime.fromisoformat(resets_at)
+
+        if period_seconds == PERIOD_7D and WEEKLY_BAR_PARTS is not None:
+            return [index / WEEKLY_BAR_PARTS for index in range(1, WEEKLY_BAR_PARTS)]
 
         if period_seconds < 24 * 3600:
             if period_seconds != PERIOD_5H:

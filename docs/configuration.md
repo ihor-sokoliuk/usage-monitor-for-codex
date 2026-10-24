@@ -209,7 +209,7 @@ The log contains the sanitized diagnostics available from `--verbose`, startup p
 
 ## Colors
 
-Popup colors are strings: `bg`, `fg`, `fg_dim`, `fg_heading`, `fg_link`, `bar_bg`, `bar_fg`, `bar_fg_warn`, `bar_divider`, and `bar_marker`.
+Popup colors are strings: `bg`, `fg`, `fg_dim`, `fg_heading`, `fg_link`, `bar_bg`, `bar_fg`, `bar_fg_warn`, `bar_divider`, and `bar_marker`. `bar_divider` sets the color of hour or calendar dividers, or the equal sections selected by [`weekly_bar_parts`](#weekly-dividers).
 
 Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA array `[R, G, B, A]`; supported channels are `fg`, `fg_half`, `fg_dim`, and `fg_warn`.
 
@@ -221,6 +221,20 @@ Tray themes are `icon_light` and `icon_dark` objects. Each channel is an RGBA ar
   }
 }
 ```
+
+## Weekly dividers
+
+Seven-day bars use local-midnight dividers by default. Set `weekly_bar_parts` to an integer from 1 to 31 to divide those bars into equal sections instead. For example:
+
+```json
+{
+  "weekly_bar_parts": 5
+}
+```
+
+Five sections place four internal dividers at 20%, 40%, 60%, and 80%. Set `1` to hide internal weekly dividers, or omit the setting to restore calendar dividers. Invalid values are ignored with a settings warning.
+
+This setting changes divider positions only. Time markers, warning colors, alerts, and elapsed-time calculations still follow the full seven-day period, including nights and weekends. Other quota durations are unchanged.
 
 ## Dormant upstream compatibility settings
 
